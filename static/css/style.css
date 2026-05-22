@@ -1,0 +1,155 @@
+:root {
+    --asar-blue: #1e4d8c;
+    --asar-orange: #e85d2c;
+    --asar-light: #f8f9fa;
+}
+
+body {
+    font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+    background: #f0f2f5;
+    min-height: 100vh;
+}
+
+.asar-header {
+    background: white;
+    border-bottom: 3px solid var(--asar-orange);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.tool-banner {
+    background: linear-gradient(135deg, var(--asar-blue), #2a5fa8);
+    border-bottom: 2px solid var(--asar-orange);
+}
+
+.upload-zone {
+    border: 2px dashed #ccc;
+    border-radius: 12px;
+    padding: 30px 20px;
+    text-align: center;
+    transition: all 0.3s;
+    min-height: 180px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+
+.upload-zone:hover,
+.upload-zone.drag-over {
+    border-color: var(--asar-blue);
+    background: rgba(30, 77, 140, 0.03);
+}
+
+.upload-zone .upload-content,
+.upload-zone .file-info {
+    width: 100%;
+}
+
+.stat-card {
+    transition: transform 0.2s;
+}
+
+.stat-card:hover {
+    transform: translateY(-2px);
+}
+
+.card {
+    border-radius: 12px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+}
+
+.card-header {
+    border-radius: 12px 12px 0 0 !important;
+    font-weight: 600;
+}
+
+#convertBtn {
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.2s;
+    background: var(--asar-blue);
+    border-color: var(--asar-blue);
+}
+
+#convertBtn:hover:not(:disabled) {
+    background: #163d6e;
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(30,77,140,0.3);
+}
+
+#convertBtn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+#downloadBtn {
+    border-radius: 8px;
+    font-weight: 600;
+    transition: all 0.2s;
+}
+
+#downloadBtn:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 4px 12px rgba(25,135,84,0.3);
+}
+
+.asar-footer {
+    background: #1a1a2e;
+    color: #ccc;
+}
+
+.asar-footer a {
+    color: var(--asar-orange);
+    text-decoration: none;
+}
+
+.asar-footer a:hover {
+    color: #ff7b4f;
+}
+
+.footer-heading {
+    color: var(--asar-orange);
+    font-weight: 600;
+    margin-bottom: 10px;
+    font-size: 14px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.footer-line {
+    font-size: 13px;
+    margin-bottom: 4px;
+}
+
+.footer-divider {
+    border-color: rgba(255,255,255,0.1);
+    margin: 20px 0;
+}
+
+.developed-by {
+    color: var(--asar-orange);
+    font-weight: 500;
+}
+
+.copyright {
+    color: #888;
+}
+
+.spinner-border {
+    width: 3rem;
+    height: 3rem;
+}
+
+.alert {
+    border-radius: 10px;
+}
+
+@media (max-width: 768px) {
+    .upload-zone {
+        min-height: 140px;
+        padding: 20px 15px;
+    }
+    .stat-card .fs-5 {
+        font-size: 1rem !important;
+    }
+}
