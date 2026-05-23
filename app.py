@@ -197,10 +197,6 @@ def download(job_id):
 
 
 if __name__ == '__main__':
-    import socket
-    hostname = socket.gethostname()
-    local_ip = socket.gethostbyname(hostname)
-    print(f'\n  [OK] ICAI NCE Financial Statement Converter running!')
-    print(f'  >>  Open in browser:  http://{local_ip}:5001')
-    print(f'  >>  Share this link with staff on same WiFi\n')
-    app.run(host='0.0.0.0', port=5001, debug=False)
+    port = int(os.environ.get('PORT', 5001))
+    print(f'\n  [OK] ICAI NCE Financial Statement Converter running on port {port}!')
+    app.run(host='0.0.0.0', port=port, debug=False)
