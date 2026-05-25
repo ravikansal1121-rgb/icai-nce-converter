@@ -98,7 +98,10 @@ def _setup_sheet(ws):
     ws.sheet_view.showGridLines = False
 
 
-def build_icai_workbook(classified, note_info, output_path):
+def build_icai_workbook(classified, note_info, output_path, constitution=None):
+    if constitution is None:
+        constitution = classified.get('constitution', 'proprietorship')
+
     wb = Workbook()
 
     ws_index = wb.active
@@ -122,9 +125,12 @@ def build_icai_workbook(classified, note_info, output_path):
 
     _build_index(ws_index, classified, retained, group_ranges)
     row_refs = {}
-    _build_balance_sheet(ws_bs, classified, note_info, row_refs)
-    _build_pl(ws_pl, classified, note_info, row_refs)
-    _build_notes(note_sheets, classified, note_info, row_refs, group_ranges)
+    _build_balance_sheet(ws_bs, classified, note_info, row_refs, constitution)
+    if constitution == 'partnership':
+        _build_pl_partnership(ws_pl, classified, note_info, row_refs)
+    else:
+        _build_pl(ws_pl, classified, note_info, row_refs)
+    _build_notes(note_sheets, classified, note_info, row_refs, group_ranges, constitution)
 
     _normalize_fonts(wb)
 
@@ -145,7 +151,7 @@ def _group_notes(retained):
                    'trade_receivables', 'cash_bank', 'st_loans_advances', 'other_ca']),
         ('pl', ['revenue', 'other_income', 'cost_of_materials', 'changes_in_inventories',
                 'employee_benefits', 'finance_costs', 'depreciation_note', 'other_expenses_note']),
-        ('additional', ['previous_year', 'rounding_off']),
+        ('additional', ['segment_reporting', 'confirmation_balances', 'previous_year', 'rounding_off']),
     ]
 
     retained_ids = {n['id'] for n in retained}
@@ -208,7 +214,7 @@ def _build_index(ws, classified, retained, group_ranges):
     _apply_border_row(ws, row - 1, 3, THIN_BOTTOM)
 
 
-def _build_balance_sheet(ws, classified, note_info, row_refs):
+def _build_balance_sheet(ws, classified, note_info, row_refs, constitution='proprietorship'):
     max_col = 6
     entity = classified['entity_name']
     ye_cy = classified.get('year_ending_cy', '31 March 20XX')
@@ -241,10 +247,16 @@ def _build_balance_sheet(ws, classified, note_info, row_refs):
     _set_text(ws, row, 2, 'EQUITY AND LIABILITIES', bold=True)
     row += 1
 
-    _set_text(ws, row, 2, "(1) Owner's Capital", bold=True, indent=1)
+    if constitution == 'partnership':
+        _set_text(ws, row, 2, "(1) Partners' Capital", bold=True, indent=1)
+    else:
+        _set_text(ws, row, 2, "(1) Owner's Capital", bold=True, indent=1)
     row += 1
     cap_note = bn.get('capital', '')
-    _set_text(ws, row, 2, 'Capital Account', indent=2)
+    if constitution == 'partnership':
+        _set_text(ws, row, 2, "Partners' Capital Account", indent=2)
+    else:
+        _set_text(ws, row, 2, 'Capital Account', indent=2)
     _set_center(ws, row, 3, cap_note)
     cap_cy = classified.get('capital_cy', {})
     cap_py = classified.get('capital_py', {})
@@ -485,17 +497,38 @@ def _build_balance_sheet(ws, classified, note_info, row_refs):
 
     row += 2
     _set_text(ws, row, 1, 'For and on behalf of', bold=True)
-    _set_text(ws, row, 4, 'For and on behalf of the Entity', bold=True)
+    _set_text(ws, row, 4, f'For and on behalf of {entity}', bold=True)
     row += 1
     _set_text(ws, row, 1, '____________________')
-    _set_text(ws, row, 4, '____________________')
-    row += 1
+
+    if constitution == 'partnership':
+        # Partnership: all partners sign
+        partners = classified.get('partners', [])
+        if partners:
+            for partner in partners:
+                _set_text(ws, row, 4, '____________________')
+                row += 1
+                _set_text(ws, row, 4, f'{partner["name"]} (Partner)')
+                row += 1
+        else:
+            _set_text(ws, row, 4, '____________________')
+            row += 1
+            _set_text(ws, row, 4, '(Partner)')
+            row += 1
+        _set_text(ws, row, 4, 'As per Partnership Deed dated ___')
+        row += 1
+    else:
+        _set_text(ws, row, 4, '____________________')
+        row += 1
+        prop_name = classified.get('proprietor_name', '—')
+        _set_text(ws, row, 4, f'Shri/Smt. {prop_name}')
+        row += 1
+        _set_text(ws, row, 4, '(Proprietor)')
+        row += 1
+
     _set_text(ws, row, 1, 'Chartered Accountants')
-    prop_name = classified.get('proprietor_name', '—')
-    _set_text(ws, row, 4, f'Shri/Smt. {prop_name}')
     row += 1
     _set_text(ws, row, 1, 'Firm Registration No.: —')
-    _set_text(ws, row, 4, '(Proprietor)')
     row += 2
     _set_text(ws, row, 1, 'Place: —')
     _set_text(ws, row, 4, 'Place: —')
@@ -687,7 +720,279 @@ def _build_pl(ws, classified, note_info, row_refs):
               italic=True)
 
 
-def _build_notes(note_sheets, classified, note_info, row_refs, group_ranges):
+def _build_pl_partnership(ws, classified, note_info, row_refs):
+    """Build Statement of Profit and Loss for Partnership Firms with Tax and Appropriation."""
+    max_col = 6
+    entity = classified['entity_name']
+    ye_cy = classified.get('year_ending_cy', '31 March 20XX')
+    ye_py = classified.get('year_ending_py', '31 March 20XX')
+
+    _title_block(ws, entity, 'Statement of Profit and Loss', max_col)
+
+    ws.column_dimensions['A'].width = 5
+    ws.column_dimensions['B'].width = 55
+    ws.column_dimensions['C'].width = 8
+    ws.column_dimensions['D'].width = 18
+    ws.column_dimensions['E'].width = 2
+    ws.column_dimensions['F'].width = 18
+
+    row = 5
+    _set_text(ws, row, 2, 'Particulars', bold=True)
+    _set_text(ws, row, 3, 'Note', bold=True)
+    ws.cell(row, 3).alignment = Alignment(horizontal='center', vertical='top')
+    _set_text(ws, row, 4, f'For the year ended {ye_cy}', bold=True)
+    ws.cell(row, 4).alignment = Alignment(horizontal='center', vertical='top')
+    _set_text(ws, row, 6, f'For the year ended {ye_py}', bold=True)
+    ws.cell(row, 6).alignment = Alignment(horizontal='center', vertical='top')
+    _apply_border_row(ws, row, max_col, THIN_TOP_BOTTOM)
+
+    pn = note_info['pl_line_to_note']
+    row += 2
+
+    # I. Revenue from Operations
+    _set_text(ws, row, 1, 'I.', bold=True)
+    _set_text(ws, row, 2, 'Revenue from Operations', indent=1)
+    if 'revenue' in pn:
+        _set_center(ws, row, 3, pn['revenue'])
+    _set_num(ws, row, 4, _sum_list(classified.get('revenue_from_operations_cy', [])))
+    _set_num(ws, row, 6, _sum_list(classified.get('revenue_from_operations_py', [])))
+    rev_row = row
+    row += 1
+
+    # II. Other Income
+    _set_text(ws, row, 1, 'II.', bold=True)
+    _set_text(ws, row, 2, 'Other Income', indent=1)
+    if 'other_income' in pn:
+        _set_center(ws, row, 3, pn['other_income'])
+    _set_num(ws, row, 4, _sum_list(classified.get('other_income_cy', [])))
+    _set_num(ws, row, 6, _sum_list(classified.get('other_income_py', [])))
+    oi_row = row
+    row += 1
+
+    # III. Total Income
+    _set_text(ws, row, 1, 'III.', bold=True)
+    _set_text(ws, row, 2, 'Total Income (I + II)', bold=True, indent=1)
+    _set_num(ws, row, 4, formula=f'=D{rev_row}+D{oi_row}', bold=True)
+    _set_num(ws, row, 6, formula=f'=F{rev_row}+F{oi_row}', bold=True)
+    _apply_border_row(ws, row, max_col, THIN_TOP_BOTTOM)
+    total_income_row = row
+
+    row += 2
+    # IV. EXPENSES
+    _set_text(ws, row, 1, 'IV.', bold=True)
+    _set_text(ws, row, 2, 'EXPENSES', bold=True)
+    row += 1
+
+    expense_rows = []
+
+    if 'cost_of_materials' in pn:
+        _set_text(ws, row, 2, 'Purchases of Stock-in-Trade', indent=1)
+        _set_center(ws, row, 3, pn['cost_of_materials'])
+        _set_num(ws, row, 4, _sum_list(classified.get('purchases_cy', [])))
+        _set_num(ws, row, 6, _sum_list(classified.get('purchases_py', [])))
+        expense_rows.append(row)
+        row += 1
+
+    if 'changes_in_inventories' in pn:
+        _set_text(ws, row, 2, 'Changes in Inventories of Finished Goods and Stock-in-Trade', indent=1)
+        _set_center(ws, row, 3, pn['changes_in_inventories'])
+        os_cy = classified.get('opening_stock_cy', 0)
+        cs_cy = classified.get('closing_stock_cy', 0)
+        os_py = classified.get('opening_stock_py', 0)
+        cs_py = classified.get('closing_stock_py', 0)
+        change_cy = os_cy - cs_cy
+        change_py = os_py - cs_py
+        _set_num(ws, row, 4, change_cy)
+        _set_num(ws, row, 6, change_py)
+        expense_rows.append(row)
+        row += 1
+
+    if 'employee_benefits' in pn:
+        _set_text(ws, row, 2, 'Employee Benefits Expense', indent=1)
+        _set_center(ws, row, 3, pn['employee_benefits'])
+        _set_num(ws, row, 4, _sum_list(classified.get('employee_benefits_cy', [])))
+        _set_num(ws, row, 6, _sum_list(classified.get('employee_benefits_py', [])))
+        expense_rows.append(row)
+        row += 1
+
+    if 'finance_costs' in pn:
+        _set_text(ws, row, 2, 'Finance Costs', indent=1)
+        _set_center(ws, row, 3, pn['finance_costs'])
+        _set_num(ws, row, 4, _sum_list(classified.get('finance_costs_cy', [])))
+        _set_num(ws, row, 6, _sum_list(classified.get('finance_costs_py', [])))
+        expense_rows.append(row)
+        row += 1
+
+    if 'depreciation_note' in pn:
+        _set_text(ws, row, 2, 'Depreciation and Amortisation Expense', indent=1)
+        _set_center(ws, row, 3, pn['depreciation_note'])
+        _set_num(ws, row, 4, classified.get('depreciation_cy', 0))
+        _set_num(ws, row, 6, classified.get('depreciation_py', 0))
+        expense_rows.append(row)
+        row += 1
+
+    if 'other_expenses_note' in pn:
+        _set_text(ws, row, 2, 'Other Expenses', indent=1)
+        _set_center(ws, row, 3, pn['other_expenses_note'])
+        _set_num(ws, row, 4, _sum_list(classified.get('other_expenses_cy', [])))
+        _set_num(ws, row, 6, _sum_list(classified.get('other_expenses_py', [])))
+        expense_rows.append(row)
+        row += 1
+
+    row += 1
+    # Total Expenses
+    _set_text(ws, row, 2, 'Total Expenses (IV)', bold=True, indent=1)
+    if expense_rows:
+        exp_formula_cy = '=' + '+'.join([f'D{r}' for r in expense_rows])
+        exp_formula_py = '=' + '+'.join([f'F{r}' for r in expense_rows])
+    else:
+        exp_formula_cy = '=0'
+        exp_formula_py = '=0'
+    _set_num(ws, row, 4, formula=exp_formula_cy, bold=True)
+    _set_num(ws, row, 6, formula=exp_formula_py, bold=True)
+    _apply_border_row(ws, row, max_col, THIN_TOP_BOTTOM)
+    total_exp_row = row
+
+    # V. Profit before tax
+    row += 2
+    _set_text(ws, row, 1, 'V.', bold=True)
+    _set_text(ws, row, 2, 'Profit / (Loss) Before Tax (III - IV)', bold=True, indent=1)
+    _set_num(ws, row, 4, formula=f'=D{total_income_row}-D{total_exp_row}', bold=True)
+    _set_num(ws, row, 6, formula=f'=F{total_income_row}-F{total_exp_row}', bold=True)
+    _apply_border_row(ws, row, max_col, THIN_BOTTOM)
+    pbt_row = row
+
+    # VI. Tax Expense (Partnership firms pay tax at firm level)
+    row += 1
+    _set_text(ws, row, 1, 'VI.', bold=True)
+    _set_text(ws, row, 2, 'Tax Expense:', indent=1)
+    row += 1
+    _set_text(ws, row, 2, 'Current Tax', indent=2)
+    firm_tax_cy = classified.get('firm_tax_cy', 0)
+    firm_tax_py = classified.get('firm_tax_py', 0)
+    _set_num(ws, row, 4, firm_tax_cy)
+    _set_num(ws, row, 6, firm_tax_py)
+    tax_row = row
+
+    # VII. Profit for the year after tax
+    row += 1
+    _set_text(ws, row, 1, 'VII.', bold=True)
+    _set_text(ws, row, 2, 'Profit / (Loss) for the Year After Tax (V - VI)', bold=True, indent=1)
+    _set_num(ws, row, 4, formula=f'=D{pbt_row}-D{tax_row}', bold=True)
+    _set_num(ws, row, 6, formula=f'=F{pbt_row}-F{tax_row}', bold=True)
+    _apply_border_row(ws, row, max_col, THIN_TOP_DOUBLE_BOTTOM)
+    pat_row = row
+
+    row_refs['pl_net_profit_cy'] = (ws.title, pat_row, 4)
+    row_refs['pl_net_profit_py'] = (ws.title, pat_row, 6)
+    row_refs['pl_pat_row'] = pat_row
+
+    # ─── PROFIT AND LOSS APPROPRIATION ───
+    row += 2
+    _set_text(ws, row, 2, 'PROFIT AND LOSS APPROPRIATION', bold=True)
+    _apply_border_row(ws, row, max_col, THIN_TOP_BOTTOM)
+    row += 1
+
+    _set_text(ws, row, 2, 'Profit for the year after tax', indent=1)
+    _set_num(ws, row, 4, formula=f'=D{pat_row}')
+    _set_num(ws, row, 6, formula=f'=F{pat_row}')
+    appro_pat_row = row
+    row += 1
+
+    # Less: Interest on Partners' Capital
+    ioc_cy = classified.get('partner_interest_on_capital_cy', 0)
+    ioc_py = classified.get('partner_interest_on_capital_py', 0)
+    _set_text(ws, row, 2, "Less: Interest on Partners' Capital", indent=1)
+    _set_num(ws, row, 4, ioc_cy)
+    _set_num(ws, row, 6, ioc_py)
+    ioc_row = row
+    row += 1
+
+    # Less: Remuneration / Salary to Partners
+    rem_cy = _sum_list(classified.get('partner_remuneration_cy', []))
+    rem_py = _sum_list(classified.get('partner_remuneration_py', []))
+    _set_text(ws, row, 2, 'Less: Remuneration / Salary to Partners', indent=1)
+    _set_num(ws, row, 4, rem_cy)
+    _set_num(ws, row, 6, rem_py)
+    rem_row = row
+    row += 1
+
+    # Divisible Profit
+    _set_text(ws, row, 2, 'Divisible Profit', bold=True, indent=1)
+    _set_num(ws, row, 4, formula=f'=D{appro_pat_row}-D{ioc_row}-D{rem_row}', bold=True)
+    _set_num(ws, row, 6, formula=f'=F{appro_pat_row}-F{ioc_row}-F{rem_row}', bold=True)
+    _apply_border_row(ws, row, max_col, THIN_TOP_BOTTOM)
+    divisible_row = row
+    row_refs['pl_divisible_cy'] = (ws.title, divisible_row, 4)
+    row_refs['pl_divisible_py'] = (ws.title, divisible_row, 6)
+
+    row += 2
+    _set_text(ws, row, 2, 'Distribution:', bold=True, indent=1)
+    row += 1
+
+    partners = classified.get('partners', [])
+    appro_cy = classified.get('appropriation_cy', {})
+    appro_py = classified.get('appropriation_py', {})
+    dist_cy = appro_cy.get('distribution', [])
+    dist_py = appro_py.get('distribution', [])
+
+    dist_rows = []
+    if partners:
+        for idx, partner in enumerate(partners):
+            pname = partner['name']
+            pshare = partner.get('share', 0)
+            _set_text(ws, row, 2, f'{pname} ({pshare:.0f}%)', indent=2)
+
+            # CY distribution
+            cy_dist_item = next((d for d in dist_cy if d['name'] == pname), None)
+            cy_amt = cy_dist_item['amount'] if cy_dist_item else 0
+
+            # PY distribution
+            py_dist_item = next((d for d in dist_py if d['name'] == pname), None)
+            py_amt = py_dist_item['amount'] if py_dist_item else 0
+
+            if idx == len(partners) - 1:
+                # Last partner is balancing figure
+                if len(dist_rows) > 0:
+                    others_cy = '+'.join([f'D{r}' for r in dist_rows])
+                    others_py = '+'.join([f'F{r}' for r in dist_rows])
+                    _set_num(ws, row, 4, formula=f'=D{divisible_row}-({others_cy})')
+                    _set_num(ws, row, 6, formula=f'=F{divisible_row}-({others_py})')
+                else:
+                    _set_num(ws, row, 4, formula=f'=D{divisible_row}')
+                    _set_num(ws, row, 6, formula=f'=F{divisible_row}')
+            else:
+                _set_num(ws, row, 4, cy_amt)
+                _set_num(ws, row, 6, py_amt)
+
+            dist_rows.append(row)
+            row_refs[f'pl_dist_{pname}_cy'] = (ws.title, row, 4)
+            row_refs[f'pl_dist_{pname}_py'] = (ws.title, row, 6)
+            row += 1
+    else:
+        _set_text(ws, row, 2, 'Partners (as per deed)', indent=2)
+        _set_num(ws, row, 4, formula=f'=D{divisible_row}')
+        _set_num(ws, row, 6, formula=f'=F{divisible_row}')
+        dist_rows.append(row)
+        row += 1
+
+    # Total Distributed (must equal Divisible Profit)
+    _set_text(ws, row, 2, 'Total Distributed', bold=True, indent=1)
+    if len(dist_rows) == 1:
+        _set_num(ws, row, 4, formula=f'=D{dist_rows[0]}', bold=True)
+        _set_num(ws, row, 6, formula=f'=F{dist_rows[0]}', bold=True)
+    else:
+        _set_num(ws, row, 4, formula=f'=SUM(D{dist_rows[0]}:D{dist_rows[-1]})', bold=True)
+        _set_num(ws, row, 6, formula=f'=SUM(F{dist_rows[0]}:F{dist_rows[-1]})', bold=True)
+    _apply_border_row(ws, row, max_col, THIN_TOP_DOUBLE_BOTTOM)
+
+    row += 2
+    last_note = note_info['last_note_number']
+    _set_text(ws, row, 2, f'The accompanying Notes 1 to {last_note} form an integral part of these Financial Statements.',
+              italic=True)
+
+
+def _build_notes(note_sheets, classified, note_info, row_refs, group_ranges, constitution='proprietorship'):
     for group_name, notes in group_ranges:
         ws = note_sheets.get(group_name)
         if not ws:
@@ -706,11 +1011,11 @@ def _build_notes(note_sheets, classified, note_info, row_refs, group_ranges):
         row = 5
 
         for note in notes:
-            row = _write_note(ws, row, note, classified, note_info, row_refs)
+            row = _write_note(ws, row, note, classified, note_info, row_refs, constitution)
             row += 2
 
 
-def _write_note(ws, row, note, classified, note_info, row_refs):
+def _write_note(ws, row, note, classified, note_info, row_refs, constitution='proprietorship'):
     note_num = note['number']
     note_id = note['id']
     title = note['title']
@@ -722,13 +1027,13 @@ def _write_note(ws, row, note, classified, note_info, row_refs):
     row += 1
 
     if note_id == 'brief':
-        row = _write_brief(ws, row, classified)
+        row = _write_brief(ws, row, classified, constitution)
 
     elif note_id == 'policies':
-        row = _write_policies(ws, row, classified)
+        row = _write_policies(ws, row, classified, constitution)
 
     elif note_id == 'capital':
-        row = _write_capital(ws, row, classified, note_info)
+        row = _write_capital(ws, row, classified, note_info, row_refs, constitution)
 
     elif note_id in ('lt_borrowings',):
         _set_text(ws, row, 2, 'Particulars', bold=True)
@@ -1050,6 +1355,23 @@ def _write_note(ws, row, note, classified, note_info, row_refs):
             _set_text(ws, row, 2, 'Depreciation has not been provided in the books of account.', italic=True)
         row += 1
 
+    elif note_id == 'segment_reporting':
+        _set_text(ws, row, 2,
+                  'The entity operates in a single business segment and a single geographical '
+                  'segment. Accordingly, no separate segment reporting is required under AS 17.')
+        ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[row].height = 30
+        row += 1
+
+    elif note_id == 'confirmation_balances':
+        _set_text(ws, row, 2,
+                  'Balances of Trade Receivables and Trade Payables are subject to confirmation '
+                  'from respective parties. Adjustments, if any, arising on such confirmations will '
+                  'be dealt with in the year of confirmation.')
+        ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[row].height = 45
+        row += 1
+
     elif note_id == 'previous_year':
         _set_text(ws, row, 2,
                   'Previous year figures have been regrouped / reclassified wherever necessary '
@@ -1073,18 +1395,40 @@ def _write_note(ws, row, note, classified, note_info, row_refs):
                   f'Signatures to Notes 1 to {last_note}', bold=True)
         row += 2
 
+        entity = classified['entity_name']
         _set_text(ws, row, 1, 'For and on behalf of', bold=True)
-        _set_text(ws, row, 4, 'For and on behalf of the Entity', bold=True)
+        _set_text(ws, row, 4, f'For and on behalf of {entity}', bold=True)
         row += 1
         _set_text(ws, row, 1, '____________________')
-        _set_text(ws, row, 4, '____________________')
-        row += 1
+
+        if constitution == 'partnership':
+            # Partnership: all partners sign
+            partners = classified.get('partners', [])
+            if partners:
+                for partner in partners:
+                    _set_text(ws, row, 4, '____________________')
+                    row += 1
+                    _set_text(ws, row, 4, f'{partner["name"]} (Partner)')
+                    row += 1
+            else:
+                _set_text(ws, row, 4, '____________________')
+                row += 1
+                _set_text(ws, row, 4, '(Partner)')
+                row += 1
+            _set_text(ws, row, 4, 'As per Partnership Deed dated ___')
+            row += 1
+        else:
+            _set_text(ws, row, 4, '____________________')
+            row += 1
+            prop_name = classified.get('proprietor_name', '—')
+            _set_text(ws, row, 4, f'Shri/Smt. {prop_name}')
+            row += 1
+            _set_text(ws, row, 4, '(Proprietor)')
+            row += 1
+
         _set_text(ws, row, 1, 'Chartered Accountants')
-        prop_name = classified.get('proprietor_name', '—')
-        _set_text(ws, row, 4, f'Shri/Smt. {prop_name}')
         row += 1
         _set_text(ws, row, 1, 'Firm Registration No.: —')
-        _set_text(ws, row, 4, '(Proprietor)')
         row += 2
         _set_text(ws, row, 1, '____________________')
         _set_text(ws, row, 4, '')
@@ -1096,7 +1440,8 @@ def _write_note(ws, row, note, classified, note_info, row_refs):
         _set_text(ws, row, 1, 'Membership No.: —')
         row += 2
         _set_text(ws, row, 1, 'UDIN: —')
-        _set_text(ws, row, 4, f'PAN: —')
+        pan = classified.get('pan', '—') or '—'
+        _set_text(ws, row, 4, f'PAN: {pan}')
         row += 1
         _set_text(ws, row, 1, 'Place: —')
         _set_text(ws, row, 4, 'Place: —')
@@ -1107,20 +1452,35 @@ def _write_note(ws, row, note, classified, note_info, row_refs):
     return row
 
 
-def _write_brief(ws, row, classified):
+def _write_brief(ws, row, classified, constitution='proprietorship'):
     entity = classified['entity_name']
-    constitution = classified.get('constitution', 'proprietorship')
     prop_name = classified.get('proprietor_name', '—')
+    pan = classified.get('pan', '—') or '—'
+    gstin = classified.get('gstin', '—') or '—'
+    business_nature = classified.get('business_nature', '— (to be specified)') or '— (to be specified)'
+
+    if constitution == 'partnership':
+        partners = classified.get('partners', [])
+        if partners:
+            partner_names = ', '.join([p['name'] for p in partners])
+        else:
+            partner_names = '—'
+        names_label = 'Names of Partners'
+        names_value = partner_names
+        constitution_label = 'Partnership Firm'
+    else:
+        names_label = 'Name of Proprietor'
+        names_value = f'Shri/Smt. {prop_name}' if prop_name else '—'
+        constitution_label = 'Proprietorship Concern'
 
     items = [
         ('1.1', 'Name of the Entity', entity),
-        ('1.2', 'Constitution', constitution.title() + ' Concern'),
-        ('1.3', 'Name of Proprietor' if constitution == 'proprietorship' else 'Names of Partners',
-         f'Shri/Smt. {prop_name}' if prop_name else '—'),
-        ('1.4', 'Nature of Business', '— (to be specified)'),
+        ('1.2', 'Constitution', constitution_label),
+        ('1.3', names_label, names_value),
+        ('1.4', 'Nature of Business', business_nature),
         ('1.5', 'Address of Registered Office', '—'),
-        ('1.6', 'PAN', '—'),
-        ('1.7', 'GSTIN', '—'),
+        ('1.6', 'PAN', pan),
+        ('1.7', 'GSTIN', gstin),
         ('1.8', 'Date of Commencement of Business', '—'),
         ('1.9', 'NCE Level', 'Level IV'),
     ]
@@ -1131,16 +1491,27 @@ def _write_brief(ws, row, classified):
         _set_text(ws, row, 4, value)
         row += 1
 
+    # For partnership, list individual partners with PSR
+    if constitution == 'partnership' and partners:
+        row += 1
+        _set_text(ws, row, 2, 'Profit Sharing Ratio (PSR):', bold=True)
+        row += 1
+        for idx, partner in enumerate(partners, 1):
+            _set_text(ws, row, 2, f'  {idx}. {partner["name"]}', indent=1)
+            _set_text(ws, row, 4, f'{partner.get("share", 0):.2f}%')
+            row += 1
+
     return row
 
 
-def _write_policies(ws, row, classified):
-    constitution = classified.get('constitution', 'proprietorship')
+def _write_policies(ws, row, classified, constitution='proprietorship'):
     has_ppe = bool(classified.get('ppe_cy') or classified.get('ppe_py'))
     has_dep = classified.get('depreciation_cy', 0) > 0 or classified.get('depreciation_py', 0) > 0
     has_inv = classified.get('inventories_cy', 0) > 0 or classified.get('closing_stock_cy', 0) > 0
 
-    _set_text(ws, row, 2, '2.1 Basis of Preparation', bold=True)
+    policy_num = 1
+
+    _set_text(ws, row, 2, f'2.{policy_num} Basis of Preparation', bold=True)
     row += 1
     _set_text(ws, row, 2,
               'The financial statements have been prepared in accordance with the Accounting Standards '
@@ -1151,8 +1522,9 @@ def _write_policies(ws, row, classified):
     ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
     ws.row_dimensions[row].height = 60
     row += 2
+    policy_num += 1
 
-    _set_text(ws, row, 2, '2.2 Use of Estimates', bold=True)
+    _set_text(ws, row, 2, f'2.{policy_num} Use of Estimates', bold=True)
     row += 1
     _set_text(ws, row, 2,
               'The preparation of financial statements requires management to make estimates and '
@@ -1162,27 +1534,36 @@ def _write_policies(ws, row, classified):
     ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
     ws.row_dimensions[row].height = 55
     row += 2
+    policy_num += 1
 
     if has_ppe:
-        _set_text(ws, row, 2, '2.3 Property, Plant and Equipment', bold=True)
+        _set_text(ws, row, 2, f'2.{policy_num} Property, Plant and Equipment', bold=True)
         row += 1
         if has_dep:
             txt = ('Property, Plant and Equipment are stated at cost less accumulated depreciation. '
                    'Depreciation is provided on Written Down Value / Straight Line Method basis at the '
                    'rates prescribed under the Income Tax Act, 1961.')
         else:
-            txt = ('Property, Plant and Equipment are stated at cost. Depreciation has not been provided '
-                   'in the books of account during the year. The proprietor intends to provide depreciation '
-                   'on useful life basis as prescribed under Schedule II to the Companies Act, 2013 in the '
-                   'ensuing year. The impact on the financial statements on account of non-provision of '
-                   'depreciation has not been ascertained.')
+            if constitution == 'partnership':
+                txt = ('Property, Plant and Equipment are stated at cost. Depreciation has not been provided '
+                       'in the books of account during the year. The firm intends to provide depreciation '
+                       'on useful life basis as prescribed under Schedule II to the Companies Act, 2013 in the '
+                       'ensuing year. The impact on the financial statements on account of non-provision of '
+                       'depreciation has not been ascertained.')
+            else:
+                txt = ('Property, Plant and Equipment are stated at cost. Depreciation has not been provided '
+                       'in the books of account during the year. The proprietor intends to provide depreciation '
+                       'on useful life basis as prescribed under Schedule II to the Companies Act, 2013 in the '
+                       'ensuing year. The impact on the financial statements on account of non-provision of '
+                       'depreciation has not been ascertained.')
         _set_text(ws, row, 2, txt)
         ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
         ws.row_dimensions[row].height = 60
         row += 2
+        policy_num += 1
 
     if has_inv:
-        _set_text(ws, row, 2, '2.4 Inventories', bold=True)
+        _set_text(ws, row, 2, f'2.{policy_num} Inventories', bold=True)
         row += 1
         _set_text(ws, row, 2,
                   'Inventories are valued at the lower of cost and net realisable value. Cost is '
@@ -1190,8 +1571,9 @@ def _write_policies(ws, row, classified):
         ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
         ws.row_dimensions[row].height = 30
         row += 2
+        policy_num += 1
 
-    _set_text(ws, row, 2, '2.5 Revenue Recognition', bold=True)
+    _set_text(ws, row, 2, f'2.{policy_num} Revenue Recognition', bold=True)
     row += 1
     _set_text(ws, row, 2,
               'Revenue is recognised when the significant risks and rewards of ownership of goods have '
@@ -1200,9 +1582,33 @@ def _write_policies(ws, row, classified):
     ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
     ws.row_dimensions[row].height = 45
     row += 2
+    policy_num += 1
 
-    if constitution == 'proprietorship':
-        _set_text(ws, row, 2, '2.6 Income Tax', bold=True)
+    if constitution == 'partnership':
+        _set_text(ws, row, 2, f'2.{policy_num} Income Tax', bold=True)
+        row += 1
+        _set_text(ws, row, 2,
+                  'Income tax is provided at the applicable rate for the firm (currently 33.34% effective '
+                  'rate including surcharge and cess) on the taxable income of the firm computed after '
+                  'allowable partner remuneration and interest under Section 40(b) of the Income Tax Act, 1961.')
+        ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[row].height = 45
+        row += 2
+        policy_num += 1
+
+        _set_text(ws, row, 2, f'2.{policy_num} Partner Remuneration and Interest on Capital', bold=True)
+        row += 1
+        _set_text(ws, row, 2,
+                  'Partner remuneration and interest on capital are provided within the limits prescribed '
+                  'under Section 40(b) of the Income Tax Act, 1961 and as per the terms of the Partnership '
+                  'Deed. These are treated as appropriations of profit and not as charges against profit.')
+        ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
+        ws.row_dimensions[row].height = 45
+        row += 2
+        policy_num += 1
+
+    elif constitution == 'proprietorship':
+        _set_text(ws, row, 2, f'2.{policy_num} Income Tax', bold=True)
         row += 1
         _set_text(ws, row, 2,
                   'The entity being a proprietorship concern, the income of the entity is assessable in '
@@ -1211,8 +1617,9 @@ def _write_policies(ws, row, classified):
         ws.cell(row, 2).alignment = Alignment(wrap_text=True, vertical='top')
         ws.row_dimensions[row].height = 45
         row += 2
+        policy_num += 1
 
-    _set_text(ws, row, 2, '2.7 Cash Flow Statement', bold=True)
+    _set_text(ws, row, 2, f'2.{policy_num} Cash Flow Statement', bold=True)
     row += 1
     _set_text(ws, row, 2,
               'The entity being a Level IV Non-Corporate Entity, Cash Flow Statement is not prepared '
@@ -1224,8 +1631,9 @@ def _write_policies(ws, row, classified):
     return row
 
 
-def _write_capital(ws, row, classified, note_info):
-    constitution = classified.get('constitution', 'proprietorship')
+def _write_capital(ws, row, classified, note_info, row_refs=None, constitution='proprietorship'):
+    if row_refs is None:
+        row_refs = {}
     entity = classified['entity_name']
     ye_cy = classified.get('year_ending_cy', '')
     ye_py = classified.get('year_ending_py', '')
@@ -1234,7 +1642,177 @@ def _write_capital(ws, row, classified, note_info):
     cap_cy = classified.get('capital_cy', {})
     cap_py = classified.get('capital_py', {})
 
-    if constitution == 'proprietorship':
+    if constitution == 'partnership':
+        # ─── Partnership: Partner-wise Capital Account ───
+        partners = classified.get('partners', [])
+        appro_cy = classified.get('appropriation_cy', {})
+        appro_py = classified.get('appropriation_py', {})
+
+        _set_text(ws, row, 2, "3(a) Partners' Capital Account", bold=True)
+        row += 1
+
+        headers = ['Sr.', 'Partner Name', 'PSR(%)', 'Opening Balance',
+                   'Capital Introduced', 'Share of Profit',
+                   'Interest on Capital', 'Remuneration/Salary',
+                   'Withdrawals', 'Closing Balance']
+        col_count = len(headers)
+
+        for c, h in enumerate(headers, 1):
+            ws.column_dimensions[get_column_letter(c)].width = max(14, len(h) + 2)
+            _set_text(ws, row, c, h, bold=True)
+        ws.column_dimensions['A'].width = 6
+        ws.column_dimensions['B'].width = 25
+        _apply_border_row(ws, row, col_count, THIN_TOP_BOTTOM)
+        row += 1
+
+        # ── Current Year ──
+        ye_label = f'For the year ended {ye_cy}'
+        ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=col_count)
+        _set_text(ws, row, 1, ye_label, bold=True, italic=True)
+        row += 1
+
+        dist_cy = appro_cy.get('distribution', [])
+        ioc_cy = classified.get('partner_interest_on_capital_cy', 0)
+        rem_cy_total = _sum_list(classified.get('partner_remuneration_cy', []))
+        draw_cy_total = _sum_list(classified.get('partner_drawings_cy', []))
+
+        cy_data_rows = []
+        if partners:
+            for idx, partner in enumerate(partners, 1):
+                pname = partner['name']
+                pshare = partner.get('share', 0)
+                # Each partner gets proportional share of IOC, remuneration, drawings
+                share_frac = pshare / 100.0 if pshare else 0
+
+                dist_item = next((d for d in dist_cy if d['name'] == pname), None)
+                share_of_profit = dist_item['amount'] if dist_item else 0
+
+                partner_ioc = round(ioc_cy * share_frac)
+                partner_rem = round(rem_cy_total * share_frac)
+                partner_draw = round(draw_cy_total * share_frac)
+
+                _set_center(ws, row, 1, idx)
+                _set_text(ws, row, 2, pname)
+                _set_text(ws, row, 3, f'{pshare:.0f}%')
+                _set_num(ws, row, 4, cap_cy.get('opening', 0) * share_frac)
+                _set_num(ws, row, 5, cap_cy.get('capital_introduced', 0) * share_frac)
+                _set_num(ws, row, 6, share_of_profit)
+                _set_num(ws, row, 7, partner_ioc)
+                _set_num(ws, row, 8, partner_rem)
+                _set_num(ws, row, 9, partner_draw)
+                # Closing = Opening + Introduced + Share of Profit + IOC + Remuneration - Withdrawals
+                _set_num(ws, row, 10,
+                         formula=f'=D{row}+E{row}+F{row}+G{row}+H{row}-I{row}', bold=True)
+                cy_data_rows.append(row)
+                row_refs[f'cap_{pname}_closing_cy'] = (ws.title, row, 10)
+                row += 1
+        else:
+            # No partner data - single row
+            _set_center(ws, row, 1, 1)
+            _set_text(ws, row, 2, 'Partners (as per deed)')
+            _set_text(ws, row, 3, '100%')
+            _set_num(ws, row, 4, cap_cy.get('opening', 0))
+            _set_num(ws, row, 5, cap_cy.get('capital_introduced', 0))
+            _set_num(ws, row, 6, classified.get('net_profit_cy', 0) - classified.get('firm_tax_cy', 0))
+            _set_num(ws, row, 7, ioc_cy)
+            _set_num(ws, row, 8, rem_cy_total)
+            _set_num(ws, row, 9, draw_cy_total)
+            _set_num(ws, row, 10,
+                     formula=f'=D{row}+E{row}+F{row}+G{row}+H{row}-I{row}', bold=True)
+            cy_data_rows.append(row)
+            row += 1
+
+        # Total row for CY
+        _set_text(ws, row, 2, 'Total', bold=True)
+        for c in range(4, col_count + 1):
+            if len(cy_data_rows) == 1:
+                _set_num(ws, row, c,
+                         formula=f'={get_column_letter(c)}{cy_data_rows[0]}', bold=True)
+            else:
+                _set_num(ws, row, c,
+                         formula=f'=SUM({get_column_letter(c)}{cy_data_rows[0]}:{get_column_letter(c)}{cy_data_rows[-1]})',
+                         bold=True)
+        _apply_border_row(ws, row, col_count, THIN_TOP_BOTTOM)
+        row_refs['cap_total_closing_cy'] = (ws.title, row, 10)
+        row += 1
+
+        # ── Previous Year ──
+        if cap_py.get('opening', 0) or cap_py.get('closing', 0):
+            row += 1
+            ye_label_py = f'For the year ended {ye_py}'
+            ws.merge_cells(start_row=row, start_column=1, end_row=row, end_column=col_count)
+            _set_text(ws, row, 1, ye_label_py, bold=True, italic=True)
+            row += 1
+
+            dist_py = appro_py.get('distribution', [])
+            ioc_py = classified.get('partner_interest_on_capital_py', 0)
+            rem_py_total = _sum_list(classified.get('partner_remuneration_py', []))
+            draw_py_total = _sum_list(classified.get('partner_drawings_py', []))
+
+            py_data_rows = []
+            if partners:
+                for idx, partner in enumerate(partners, 1):
+                    pname = partner['name']
+                    pshare = partner.get('share', 0)
+                    share_frac = pshare / 100.0 if pshare else 0
+
+                    dist_item = next((d for d in dist_py if d['name'] == pname), None)
+                    share_of_profit = dist_item['amount'] if dist_item else 0
+
+                    partner_ioc = round(ioc_py * share_frac)
+                    partner_rem = round(rem_py_total * share_frac)
+                    partner_draw = round(draw_py_total * share_frac)
+
+                    _set_center(ws, row, 1, idx)
+                    _set_text(ws, row, 2, pname)
+                    _set_text(ws, row, 3, f'{pshare:.0f}%')
+                    _set_num(ws, row, 4, cap_py.get('opening', 0) * share_frac)
+                    _set_num(ws, row, 5, cap_py.get('capital_introduced', 0) * share_frac)
+                    _set_num(ws, row, 6, share_of_profit)
+                    _set_num(ws, row, 7, partner_ioc)
+                    _set_num(ws, row, 8, partner_rem)
+                    _set_num(ws, row, 9, partner_draw)
+                    _set_num(ws, row, 10,
+                             formula=f'=D{row}+E{row}+F{row}+G{row}+H{row}-I{row}', bold=True)
+                    py_data_rows.append(row)
+                    row_refs[f'cap_{pname}_closing_py'] = (ws.title, row, 10)
+                    row += 1
+            else:
+                _set_center(ws, row, 1, 1)
+                _set_text(ws, row, 2, 'Partners (as per deed)')
+                _set_text(ws, row, 3, '100%')
+                _set_num(ws, row, 4, cap_py.get('opening', 0))
+                _set_num(ws, row, 5, cap_py.get('capital_introduced', 0))
+                _set_num(ws, row, 6, classified.get('net_profit_py', 0) - classified.get('firm_tax_py', 0))
+                _set_num(ws, row, 7, ioc_py)
+                _set_num(ws, row, 8, rem_py_total)
+                _set_num(ws, row, 9, draw_py_total)
+                _set_num(ws, row, 10,
+                         formula=f'=D{row}+E{row}+F{row}+G{row}+H{row}-I{row}', bold=True)
+                py_data_rows.append(row)
+                row += 1
+
+            # Total row for PY
+            _set_text(ws, row, 2, 'Total', bold=True)
+            for c in range(4, col_count + 1):
+                if len(py_data_rows) == 1:
+                    _set_num(ws, row, c,
+                             formula=f'={get_column_letter(c)}{py_data_rows[0]}', bold=True)
+                else:
+                    _set_num(ws, row, c,
+                             formula=f'=SUM({get_column_letter(c)}{py_data_rows[0]}:{get_column_letter(c)}{py_data_rows[-1]})',
+                             bold=True)
+            _apply_border_row(ws, row, col_count, THIN_TOP_BOTTOM)
+            row_refs['cap_total_closing_py'] = (ws.title, row, 10)
+            row += 1
+
+        row += 1
+        _set_text(ws, row, 2,
+                  '3(b) Not applicable — Current Accounts are maintained within Capital Accounts only.',
+                  italic=True)
+        row += 1
+
+    elif constitution == 'proprietorship':
         _set_text(ws, row, 2, f"3(a) Proprietor's Capital Account", bold=True)
         row += 1
 

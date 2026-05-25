@@ -36,7 +36,147 @@
 
     <div class="container py-4">
         <form id="convertForm" enctype="multipart/form-data">
-            <div class="row g-4 mb-4">
+
+            <!-- ===== STEP 0: Constitution Selection ===== -->
+            <div class="card mb-4 constitution-card">
+                <div class="card-header bg-dark text-white">
+                    <i class="bi bi-building-gear"></i> Step 0 &mdash; Constitution Type
+                </div>
+                <div class="card-body">
+                    <p class="text-muted small mb-3">Select the type of entity before uploading files</p>
+                    <div class="row g-3 justify-content-center">
+                        <div class="col-sm-6 col-md-5 col-lg-4">
+                            <label class="constitution-option selected" id="optProprietorship">
+                                <input type="radio" name="constitution" value="proprietorship" checked hidden>
+                                <div class="constitution-inner">
+                                    <i class="bi bi-person-fill constitution-icon"></i>
+                                    <div class="constitution-label">Proprietorship Concern</div>
+                                    <div class="constitution-sub">Single owner / Sole proprietor</div>
+                                </div>
+                            </label>
+                        </div>
+                        <div class="col-sm-6 col-md-5 col-lg-4">
+                            <label class="constitution-option" id="optPartnership">
+                                <input type="radio" name="constitution" value="partnership" hidden>
+                                <div class="constitution-inner">
+                                    <i class="bi bi-people-fill constitution-icon"></i>
+                                    <div class="constitution-label">Partnership Firm</div>
+                                    <div class="constitution-sub">Two or more partners</div>
+                                </div>
+                            </label>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== Client Information (Collapsible) ===== -->
+            <div class="card mb-4">
+                <div class="card-header bg-white border-bottom d-flex justify-content-between align-items-center"
+                     role="button" data-bs-toggle="collapse" data-bs-target="#clientInfoBody"
+                     aria-expanded="false" aria-controls="clientInfoBody">
+                    <span><i class="bi bi-person-vcard"></i> Client Information <span class="text-muted small">(optional)</span></span>
+                    <i class="bi bi-chevron-down" id="clientInfoChevron"></i>
+                </div>
+                <div class="collapse" id="clientInfoBody">
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label class="form-label fw-semibold">Entity / Firm Name</label>
+                                <input type="text" class="form-control" name="entity_name" placeholder="e.g. Sharma Traders">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label fw-semibold">PAN</label>
+                                <input type="text" class="form-control" name="pan" placeholder="XXXXX0000X" maxlength="10" style="text-transform:uppercase;">
+                            </div>
+                            <div class="col-md-3">
+                                <label class="form-label fw-semibold">GSTIN</label>
+                                <input type="text" class="form-control" name="gstin" placeholder="optional" maxlength="15" style="text-transform:uppercase;">
+                            </div>
+                            <div class="col-md-4">
+                                <label class="form-label fw-semibold">Business Nature</label>
+                                <select class="form-select" name="business_nature">
+                                    <option value="">-- Select --</option>
+                                    <option value="Manufacturing">Manufacturing</option>
+                                    <option value="Trading">Trading</option>
+                                    <option value="Service">Service</option>
+                                    <option value="Job Work">Job Work</option>
+                                    <option value="Mixed">Mixed</option>
+                                </select>
+                            </div>
+                            <div class="col-md-8">
+                                <label class="form-label fw-semibold">Business Description</label>
+                                <textarea class="form-control" name="business_description" rows="1" placeholder="Brief description of business activity"></textarea>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== Partnership Section (Dynamic) ===== -->
+            <div class="card mb-4 d-none" id="partnershipSection">
+                <div class="card-header bg-white border-bottom">
+                    <i class="bi bi-people"></i> Partner Details
+                </div>
+                <div class="card-body">
+                    <div class="table-responsive">
+                        <table class="table table-sm align-middle mb-2" id="partnerTable">
+                            <thead>
+                                <tr>
+                                    <th style="width:5%">#</th>
+                                    <th style="width:55%">Partner Name</th>
+                                    <th style="width:25%">Sharing % (PSR)</th>
+                                    <th style="width:15%"></th>
+                                </tr>
+                            </thead>
+                            <tbody id="partnerRows">
+                                <tr data-partner-idx="1">
+                                    <td class="partner-num">1</td>
+                                    <td><input type="text" class="form-control form-control-sm" name="partner_names[]" placeholder="Partner name"></td>
+                                    <td><input type="number" class="form-control form-control-sm" name="partner_shares[]" placeholder="%" min="0" max="100" step="0.01"></td>
+                                    <td></td>
+                                </tr>
+                                <tr data-partner-idx="2">
+                                    <td class="partner-num">2</td>
+                                    <td><input type="text" class="form-control form-control-sm" name="partner_names[]" placeholder="Partner name"></td>
+                                    <td><input type="number" class="form-control form-control-sm" name="partner_shares[]" placeholder="%" min="0" max="100" step="0.01"></td>
+                                    <td></td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-primary" id="addPartnerBtn">
+                        <i class="bi bi-plus-circle"></i> Add Partner
+                    </button>
+
+                    <hr class="my-3">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label class="form-label fw-semibold">Interest on Capital Rate (%)</label>
+                            <input type="number" class="form-control form-control-sm" name="interest_on_capital_rate" value="12" min="0" max="100" step="0.5">
+                        </div>
+                        <div class="col-md-8">
+                            <label class="form-label fw-semibold">Partner Remuneration Details</label>
+                            <input type="text" class="form-control form-control-sm" name="partner_remuneration" placeholder="e.g. As per deed / Rs. 15,000 pm each">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- ===== File Upload ===== -->
+            <div class="row g-4 mb-3">
+                <!-- Single file checkbox -->
+                <div class="col-12">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="singleFileCheck" name="single_file" value="1">
+                        <label class="form-check-label" for="singleFileCheck">
+                            Both years are in a single file
+                        </label>
+                    </div>
+                    <div class="d-none text-muted small mt-1" id="singleFileNote">
+                        <i class="bi bi-info-circle"></i> We'll extract both CY and PY data from the single uploaded file.
+                    </div>
+                </div>
+
                 <div class="col-md-6">
                     <div class="card h-100">
                         <div class="card-header bg-primary text-white">
@@ -47,10 +187,10 @@
                                 <div class="upload-content">
                                     <i class="bi bi-cloud-arrow-up display-4 text-primary"></i>
                                     <p class="mt-2 mb-1 fw-bold">Drop Current Year file here</p>
-                                    <p class="text-muted small">T-format Trading + P&L + Balance Sheet (.xlsx)</p>
+                                    <p class="text-muted small">Supported formats: Excel (.xlsx), Word (.docx), PDF (.pdf)</p>
                                     <label class="btn btn-outline-primary btn-sm mt-2">
                                         Browse Files
-                                        <input type="file" name="cy_file" id="cyFile" accept=".xlsx,.xls" hidden>
+                                        <input type="file" name="cy_file" id="cyFile" accept=".xlsx,.xls,.docx,.doc,.pdf" hidden>
                                     </label>
                                 </div>
                                 <div class="file-info d-none" id="cyFileInfo">
@@ -65,7 +205,7 @@
                     </div>
                 </div>
 
-                <div class="col-md-6">
+                <div class="col-md-6" id="pyUploadCol">
                     <div class="card h-100">
                         <div class="card-header bg-success text-white">
                             <i class="bi bi-calendar-minus"></i> Previous Year (PY) File
@@ -75,10 +215,10 @@
                                 <div class="upload-content">
                                     <i class="bi bi-cloud-arrow-up display-4 text-success"></i>
                                     <p class="mt-2 mb-1 fw-bold">Drop Previous Year file here</p>
-                                    <p class="text-muted small">T-format Trading + P&L + Balance Sheet (.xlsx)</p>
+                                    <p class="text-muted small">Supported formats: Excel (.xlsx), Word (.docx), PDF (.pdf)</p>
                                     <label class="btn btn-outline-success btn-sm mt-2">
                                         Browse Files
-                                        <input type="file" name="py_file" id="pyFile" accept=".xlsx,.xls" hidden>
+                                        <input type="file" name="py_file" id="pyFile" accept=".xlsx,.xls,.docx,.doc,.pdf" hidden>
                                     </label>
                                 </div>
                                 <div class="file-info d-none" id="pyFileInfo">
@@ -194,13 +334,21 @@
             <div class="card-body">
                 <h6 class="text-muted"><i class="bi bi-info-circle"></i> How to use</h6>
                 <ol class="small text-muted mb-0">
-                    <li>Prepare T-format financial statements in Excel (.xlsx) for both Current Year and Previous Year</li>
-                    <li>Each file should contain Trading & P&L Account and Balance Sheet in the traditional Dr/Cr format</li>
-                    <li>Upload both files above and click "Convert"</li>
-                    <li>Download the auto-generated ICAI NCE format workbook with all notes, formulas, and formatting</li>
-                    <li>Review the output, fill in blank placeholders (PAN, GSTIN, CA firm details), and finalize</li>
+                    <li>Select the constitution type (Proprietorship or Partnership)</li>
+                    <li>Optionally fill in client details (entity name, PAN, GSTIN, etc.)</li>
+                    <li>Prepare T-format financial statements in Excel (.xlsx), Word (.docx), or PDF (.pdf)</li>
+                    <li>Upload files for Current Year and Previous Year (or check "single file" if both years are in one file)</li>
+                    <li>Click "Convert" and download the auto-generated ICAI NCE format workbook</li>
+                    <li>Review the output, verify placeholders, and finalize</li>
                 </ol>
             </div>
+        </div>
+
+        <!-- Suggestion link -->
+        <div class="text-center mt-3 mb-2">
+            <a href="mailto:support@asarco.in" class="suggestion-link">
+                <i class="bi bi-chat-dots"></i> Have a suggestion? Share your feedback
+            </a>
         </div>
     </div>
 
@@ -237,6 +385,7 @@
         </div>
     </footer>
 
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

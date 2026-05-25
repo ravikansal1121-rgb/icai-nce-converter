@@ -6,7 +6,7 @@ import time
 import shutil
 from flask import Flask, render_template, request, send_file, jsonify, session, redirect, url_for
 from functools import wraps
-from config import UPLOAD_FOLDER, OUTPUT_FOLDER
+from config import UPLOAD_FOLDER, OUTPUT_FOLDER, ALLOWED_EXTENSIONS
 from parsers.xlsx_parser import parse_xlsx
 from engine.classifier import classify_data
 from engine.note_manager import build_note_map
@@ -53,6 +53,21 @@ def login_required(f):
     return decorated
 
 
+def parse_file(filepath):
+    """Route file to the appropriate parser based on extension."""
+    ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''
+    if ext in ('xlsx', 'xls'):
+        return parse_xlsx(filepath)
+    elif ext in ('docx', 'doc'):
+        from parsers.docx_parser import parse_docx
+        return parse_docx(filepath)
+    elif ext == 'pdf':
+        from parsers.pdf_parser import parse_pdf
+        return parse_pdf(filepath)
+    else:
+        raise ValueError(f'Unsupported file format: .{ext}')
+
+
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     error = None
@@ -86,35 +101,134 @@ def convert():
         job_dir = os.path.join(UPLOAD_FOLDER, job_id)
         os.makedirs(job_dir, exist_ok=True)
 
-        cy_file = request.files.get('cy_file')
-        py_file = request.files.get('py_file')
+        # ---- Read new form fields ----
+        constitution = request.form.get('constitution', 'proprietorship')
+        entity_name_input = request.form.get('entity_name', '').strip()
+        pan = request.form.get('pan', '').strip().upper()
+        gstin = request.form.get('gstin', '').strip().upper()
+        business_nature = request.form.get('business_nature', '').strip()
+        business_description = request.form.get('business_description', '').strip()
+        single_file = request.form.get('single_file') == '1'
 
-        if not cy_file or not py_file:
-            return jsonify({'error': 'Dono files upload karo — Current Year aur Previous Year'}), 400
+        # Partner data (arrays from dynamic rows)
+        partner_names = request.form.getlist('partner_names[]')
+        partner_shares = request.form.getlist('partner_shares[]')
+        interest_on_capital_rate = request.form.get('interest_on_capital_rate', '12')
+        partner_remuneration = request.form.get('partner_remuneration', '').strip()
+
+        # Build partners list
+        partners = []
+        if constitution == 'partnership' and partner_names:
+            for i, name in enumerate(partner_names):
+                name = name.strip()
+                if not name:
+                    continue
+                share = 0.0
+                if i < len(partner_shares):
+                    try:
+                        share = float(partner_shares[i])
+                    except (ValueError, TypeError):
+                        share = 0.0
+                partners.append({'name': name, 'share': share})
+
+        try:
+            ioc_rate = float(interest_on_capital_rate)
+        except (ValueError, TypeError):
+            ioc_rate = 12.0
+
+        # ---- Handle file uploads ----
+        cy_file = request.files.get('cy_file')
+
+        if not cy_file:
+            return jsonify({'error': 'Current Year file upload karo.'}), 400
 
         cy_ext = cy_file.filename.rsplit('.', 1)[-1].lower() if '.' in cy_file.filename else ''
-        py_ext = py_file.filename.rsplit('.', 1)[-1].lower() if '.' in py_file.filename else ''
-
-        if cy_ext not in ('xlsx', 'xls'):
-            return jsonify({'error': f'Current Year file format ({cy_ext}) abhi supported nahi hai. Sirf .xlsx upload karo.'}), 400
-        if py_ext not in ('xlsx', 'xls'):
-            return jsonify({'error': f'Previous Year file format ({py_ext}) abhi supported nahi hai. Sirf .xlsx upload karo.'}), 400
+        if cy_ext not in ALLOWED_EXTENSIONS:
+            return jsonify({
+                'error': f'Current Year file format (.{cy_ext}) supported nahi hai. '
+                         f'Supported: .xlsx, .docx, .pdf'
+            }), 400
 
         cy_path = os.path.join(job_dir, 'cy_' + cy_file.filename)
-        py_path = os.path.join(job_dir, 'py_' + py_file.filename)
         cy_file.save(cy_path)
-        py_file.save(py_path)
 
-        cy_parsed_list = parse_xlsx(cy_path)
-        py_parsed_list = parse_xlsx(py_path)
+        if single_file:
+            # Both years in one file
+            cy_parsed_list = parse_file(cy_path)
+            if not cy_parsed_list:
+                return jsonify({
+                    'error': 'File mein koi financial data nahi mila. '
+                             'T-format (Trading + P&L + Balance Sheet) expected hai.'
+                }), 400
 
-        if not cy_parsed_list:
-            return jsonify({'error': 'Current Year file mein koi financial data nahi mila. T-format (Trading + P&L + Balance Sheet) expected hai.'}), 400
-        if not py_parsed_list:
-            return jsonify({'error': 'Previous Year file mein koi financial data nahi mila. T-format (Trading + P&L + Balance Sheet) expected hai.'}), 400
+            cy_parsed = cy_parsed_list[0]
+            # If multiple sheets/entries found, use second as PY
+            if len(cy_parsed_list) >= 2:
+                py_parsed = cy_parsed_list[1]
+            else:
+                # Use the same data as PY (user will need to verify)
+                py_parsed = cy_parsed
+        else:
+            py_file = request.files.get('py_file')
+            if not py_file:
+                return jsonify({
+                    'error': 'Dono files upload karo — Current Year aur Previous Year. '
+                             'Ya phir "Both years in single file" check karo.'
+                }), 400
 
-        cy_parsed = cy_parsed_list[0]
-        py_parsed = py_parsed_list[0]
+            py_ext = py_file.filename.rsplit('.', 1)[-1].lower() if '.' in py_file.filename else ''
+            if py_ext not in ALLOWED_EXTENSIONS:
+                return jsonify({
+                    'error': f'Previous Year file format (.{py_ext}) supported nahi hai. '
+                             f'Supported: .xlsx, .docx, .pdf'
+                }), 400
+
+            py_path = os.path.join(job_dir, 'py_' + py_file.filename)
+            py_file.save(py_path)
+
+            cy_parsed_list = parse_file(cy_path)
+            py_parsed_list = parse_file(py_path)
+
+            if not cy_parsed_list:
+                return jsonify({
+                    'error': 'Current Year file mein koi financial data nahi mila. '
+                             'T-format (Trading + P&L + Balance Sheet) expected hai.'
+                }), 400
+            if not py_parsed_list:
+                return jsonify({
+                    'error': 'Previous Year file mein koi financial data nahi mila. '
+                             'T-format (Trading + P&L + Balance Sheet) expected hai.'
+                }), 400
+
+            cy_parsed = cy_parsed_list[0]
+            py_parsed = py_parsed_list[0]
+
+        # ---- Inject user-provided metadata into parsed data ----
+        metadata = {
+            'constitution_input': constitution,
+            'entity_name_input': entity_name_input,
+            'pan': pan,
+            'gstin': gstin,
+            'business_nature': business_nature,
+            'business_description': business_description,
+            'partners': partners,
+            'interest_on_capital_rate': ioc_rate,
+            'partner_remuneration': partner_remuneration,
+        }
+
+        # Override parsed constitution if user explicitly set it
+        if constitution:
+            cy_parsed['constitution'] = constitution
+            py_parsed['constitution'] = constitution
+
+        # Override entity name if user provided one
+        if entity_name_input:
+            cy_parsed['entity_name'] = entity_name_input
+            py_parsed['entity_name'] = entity_name_input
+
+        # Attach metadata for downstream use
+        cy_parsed['metadata'] = metadata
+        py_parsed['metadata'] = metadata
 
         classified = classify_data(cy_parsed, py_parsed)
         note_info = build_note_map(classified)
@@ -162,7 +276,7 @@ def convert():
             'entity_name': entity_name,
             'fy_cy': classified.get('fy_cy', ''),
             'fy_py': classified.get('fy_py', ''),
-            'constitution': classified.get('constitution', ''),
+            'constitution': classified.get('constitution', constitution),
             'revenue_cy': round(rev_cy, 2),
             'revenue_py': round(rev_py, 2),
             'net_profit_cy': round(np_cy, 2),
@@ -177,6 +291,9 @@ def convert():
 
         return jsonify(summary)
 
+    except ValueError as ve:
+        # Catch specific value errors (e.g. scanned PDF message)
+        return jsonify({'error': str(ve)}), 400
     except Exception as e:
         traceback.print_exc()
         return jsonify({'error': str(e)}), 500

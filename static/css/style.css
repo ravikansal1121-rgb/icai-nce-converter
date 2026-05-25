@@ -21,6 +21,60 @@ body {
     border-bottom: 2px solid var(--asar-orange);
 }
 
+/* ---- Constitution selection cards ---- */
+.constitution-card .card-body {
+    padding-bottom: 24px;
+}
+
+.constitution-option {
+    display: block;
+    cursor: pointer;
+    border: 2px solid #dee2e6;
+    border-radius: 12px;
+    transition: all 0.25s;
+    background: #fff;
+}
+
+.constitution-option:hover {
+    border-color: var(--asar-blue);
+    box-shadow: 0 2px 12px rgba(30,77,140,0.12);
+}
+
+.constitution-option.selected {
+    border-color: var(--asar-blue);
+    background: linear-gradient(135deg, rgba(30,77,140,0.06), rgba(30,77,140,0.02));
+    box-shadow: 0 0 0 3px rgba(30,77,140,0.15);
+}
+
+.constitution-inner {
+    text-align: center;
+    padding: 20px 16px;
+}
+
+.constitution-icon {
+    font-size: 2rem;
+    color: var(--asar-blue);
+    margin-bottom: 8px;
+    display: block;
+}
+
+.constitution-option.selected .constitution-icon {
+    color: var(--asar-orange);
+}
+
+.constitution-label {
+    font-weight: 700;
+    font-size: 15px;
+    color: #222;
+    margin-bottom: 2px;
+}
+
+.constitution-sub {
+    font-size: 12px;
+    color: #888;
+}
+
+/* ---- Upload zones ---- */
 .upload-zone {
     border: 2px dashed #ccc;
     border-radius: 12px;
@@ -45,6 +99,29 @@ body {
     width: 100%;
 }
 
+/* ---- Partner table ---- */
+#partnerTable th {
+    font-size: 13px;
+    color: #555;
+    border-bottom: 2px solid #dee2e6;
+}
+
+#partnerTable td {
+    vertical-align: middle;
+}
+
+#partnerTable .partner-num {
+    font-weight: 600;
+    color: var(--asar-blue);
+    text-align: center;
+    width: 40px;
+}
+
+.remove-partner-btn {
+    padding: 2px 8px;
+}
+
+/* ---- Stats & result cards ---- */
 .stat-card {
     transition: transform 0.2s;
 }
@@ -63,6 +140,7 @@ body {
     font-weight: 600;
 }
 
+/* ---- Buttons ---- */
 #convertBtn {
     border-radius: 8px;
     font-weight: 600;
@@ -93,6 +171,20 @@ body {
     box-shadow: 0 4px 12px rgba(25,135,84,0.3);
 }
 
+/* ---- Suggestion link ---- */
+.suggestion-link {
+    color: #888;
+    font-size: 13px;
+    text-decoration: none;
+    transition: color 0.2s;
+}
+
+.suggestion-link:hover {
+    color: var(--asar-orange);
+    text-decoration: underline;
+}
+
+/* ---- Footer ---- */
 .asar-footer {
     background: #1a1a2e;
     color: #ccc;
@@ -144,6 +236,7 @@ body {
     border-radius: 10px;
 }
 
+/* ---- Responsive ---- */
 @media (max-width: 768px) {
     .upload-zone {
         min-height: 140px;
@@ -151,5 +244,19 @@ body {
     }
     .stat-card .fs-5 {
         font-size: 1rem !important;
+    }
+    .constitution-inner {
+        padding: 14px 10px;
+    }
+    .constitution-icon {
+        font-size: 1.6rem;
+    }
+    .constitution-label {
+        font-size: 13px;
+    }
+    #partnerTable th,
+    #partnerTable td {
+        font-size: 13px;
+        padding: 6px 4px;
     }
 }

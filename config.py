@@ -220,6 +220,19 @@ ACCOUNT_KEYWORDS = {
     'interest_on_capital': [
         'interest on capital', 'interest on capital a/c',
     ],
+    'partner_remuneration': [
+        'partner remuneration', 'partner salary', 'remuneration to partners',
+        'salary to partners', 'partners salary', 'partners remuneration',
+        'remuneration a/c', 'remuneration account',
+    ],
+    'partner_interest_on_capital': [
+        'interest on capital', 'interest on capital a/c',
+        'interest on partners capital', 'int on capital',
+    ],
+    'partner_drawings': [
+        'drawings', 'drawing', 'partner drawings', 'drawings a/c',
+        'personal drawings', 'household expenses',
+    ],
 }
 
 BS_LIABILITY_HEADS = [

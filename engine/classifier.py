@@ -92,13 +92,36 @@ def _classify_item(name, amount, side, section):
     return 'other_expenses', name, abs(amount)
 
 
-def classify_data(cy_parsed, py_parsed):
+def classify_data(cy_parsed, py_parsed, metadata=None):
+    """
+    Classify parsed T-format data into ICAI NCE categories.
+
+    metadata (optional dict) may contain:
+        constitution: 'proprietorship' | 'partnership'
+        partners: list of {name: str, share: float}
+        interest_rate: float (e.g. 12.0 for 12%)
+        entity_name_override: str
+        pan: str
+        gstin: str
+        business_nature: str
+    """
+    if metadata is None:
+        # Check if metadata was attached to parsed data by app.py
+        metadata = cy_parsed.get('metadata', {}) or {}
+
+    constitution = metadata.get('constitution',
+                                cy_parsed.get('constitution', 'proprietorship'))
+
     classified = {
-        'entity_name': cy_parsed.get('entity_name', 'Entity Name'),
+        'entity_name': metadata.get('entity_name_override',
+                                     cy_parsed.get('entity_name', 'Entity Name')),
         'fy_cy': cy_parsed.get('fy', ''),
         'fy_py': py_parsed.get('fy', ''),
-        'constitution': cy_parsed.get('constitution', 'proprietorship'),
+        'constitution': constitution,
         'proprietor_name': cy_parsed.get('proprietor_name', ''),
+        'pan': metadata.get('pan', ''),
+        'gstin': metadata.get('gstin', ''),
+        'business_nature': metadata.get('business_nature', ''),
 
         'capital_cy': cy_parsed.get('capital_account', {}),
         'capital_py': py_parsed.get('capital_account', {}),
@@ -164,6 +187,20 @@ def classify_data(cy_parsed, py_parsed):
 
         'net_profit_cy': 0,
         'net_profit_py': 0,
+
+        # Partnership-specific keys (populated only when constitution == 'partnership')
+        'partner_remuneration_cy': [],
+        'partner_remuneration_py': [],
+        'partner_interest_on_capital_cy': 0,
+        'partner_interest_on_capital_py': 0,
+        'partner_drawings_cy': [],
+        'partner_drawings_py': [],
+        'partners': [],  # [{name: str, share: float}]
+        'firm_tax_cy': 0,
+        'firm_tax_py': 0,
+        'interest_on_capital_rate': 0,
+        'appropriation_cy': {},
+        'appropriation_py': {},
     }
 
     for suffix, parsed in [('cy', cy_parsed), ('py', py_parsed)]:
@@ -187,7 +224,7 @@ def classify_data(cy_parsed, py_parsed):
                 if item.get('is_total'):
                     continue
                 cat, name, amt = _classify_item(item['name'], item['amount'], 'liabilities', 'balance_sheet')
-                if cat == 'capital':
+                if cat in ('capital', 'partner_capital'):
                     cap = classified.get(f'capital_{suffix}', {})
                     if not cap.get('closing'):
                         cap['closing'] = amt
@@ -220,7 +257,186 @@ def classify_data(cy_parsed, py_parsed):
 
     _derive_year_info(classified)
 
+    # ── Partnership-specific post-processing ──
+    if constitution == 'partnership':
+        _apply_partnership_classification(classified, metadata)
+
     return classified
+
+
+def _apply_partnership_classification(classified, metadata):
+    """
+    Reclassify items for partnership firms:
+    - Move interest on capital from finance_costs to partner_interest_on_capital
+    - Move partner remuneration from employee_benefits to partner_remuneration
+    - Move drawings from capital adjustments to partner_drawings
+    - Compute firm tax @ 33.34% if not already present
+    - Build appropriation sections for CY and PY
+    """
+    from config import ACCOUNT_KEYWORDS
+
+    partners = metadata.get('partners', [])
+    interest_rate = metadata.get('interest_rate', 0)
+    classified['partners'] = partners
+    classified['interest_on_capital_rate'] = interest_rate
+
+    # --- Reclassify interest on capital: remove from finance_costs, place in appropriation ---
+    # Also pick up items that the keyword matcher already put in interest_on_capital_* or
+    # partner_interest_on_capital_* during the initial pass
+    ioc_keywords = [kw.lower() for kw in ACCOUNT_KEYWORDS.get('partner_interest_on_capital', [])]
+    ioc_keywords += [kw.lower() for kw in ACCOUNT_KEYWORDS.get('interest_on_capital', [])]
+
+    for suffix in ['cy', 'py']:
+        ioc_total = 0
+
+        # Check finance_costs for IOC items
+        fc_key = f'finance_costs_{suffix}'
+        remaining_fc = []
+        for item in classified.get(fc_key, []):
+            name_lower = item['name'].lower().strip()
+            matched = any(kw in name_lower for kw in ioc_keywords)
+            if matched:
+                ioc_total += item['amount']
+            else:
+                remaining_fc.append(item)
+        classified[fc_key] = remaining_fc
+
+        # Also pick up items that went to interest_on_capital_* during initial classification
+        ioc_key = f'interest_on_capital_{suffix}'
+        ioc_direct = classified.get(ioc_key)
+        if ioc_direct:
+            if isinstance(ioc_direct, list):
+                ioc_total += sum(i.get('amount', 0) for i in ioc_direct)
+            elif isinstance(ioc_direct, (int, float)):
+                ioc_total += ioc_direct
+            classified[ioc_key] = [] if isinstance(ioc_direct, list) else 0
+
+        # And pick up from partner_interest_on_capital_* if already there from keyword match
+        pioc_key = f'partner_interest_on_capital_{suffix}'
+        existing_pioc = classified.get(pioc_key, 0)
+        if isinstance(existing_pioc, (int, float)) and existing_pioc > 0:
+            ioc_total += existing_pioc
+
+        classified[pioc_key] = ioc_total
+
+    # --- Reclassify partner remuneration: remove from employee_benefits and other_expenses ---
+    rem_keywords = [kw.lower() for kw in ACCOUNT_KEYWORDS.get('partner_remuneration', [])]
+
+    for suffix in ['cy', 'py']:
+        rem_items = []
+
+        # Pick up items already classified as partner_remuneration by keyword matcher
+        pr_key = f'partner_remuneration_{suffix}'
+        existing_pr = classified.get(pr_key, [])
+        if isinstance(existing_pr, list) and existing_pr:
+            rem_items.extend(existing_pr)
+
+        # Check employee_benefits for remuneration items
+        eb_key = f'employee_benefits_{suffix}'
+        remaining_eb = []
+        for item in classified.get(eb_key, []):
+            name_lower = item['name'].lower().strip()
+            matched = any(kw in name_lower for kw in rem_keywords)
+            if matched:
+                rem_items.append(item)
+            else:
+                remaining_eb.append(item)
+        classified[eb_key] = remaining_eb
+
+        # Also check other_expenses for remuneration misclassified there
+        oe_key = f'other_expenses_{suffix}'
+        remaining_oe = []
+        for item in classified.get(oe_key, []):
+            name_lower = item['name'].lower().strip()
+            matched = any(kw in name_lower for kw in rem_keywords)
+            if matched:
+                rem_items.append(item)
+            else:
+                remaining_oe.append(item)
+        classified[oe_key] = remaining_oe
+        classified[pr_key] = rem_items
+
+    # --- Reclassify drawings ---
+    draw_keywords = [kw.lower() for kw in ACCOUNT_KEYWORDS.get('partner_drawings', [])]
+
+    for suffix in ['cy', 'py']:
+        # Drawings may appear in capital_account dict or as separate items
+        cap = classified.get(f'capital_{suffix}', {})
+        drawings_val = cap.get('drawings', 0)
+        if drawings_val:
+            classified[f'partner_drawings_{suffix}'] = [
+                {'name': 'Partner Drawings', 'amount': abs(drawings_val)}
+            ]
+
+    # --- Tax restatement: check if tax was routed through capital account ---
+    # If provision_tax is empty but capital has a tax deduction, extract it
+    for suffix in ['cy', 'py']:
+        cap = classified.get(f'capital_{suffix}', {})
+        tax_via_capital = cap.get('income_tax', 0) or cap.get('tax', 0)
+        prov_tax = classified.get(f'provision_tax_{suffix}', [])
+        if tax_via_capital and not prov_tax:
+            classified[f'provision_tax_{suffix}'] = [
+                {'name': 'Provision for Income Tax', 'amount': abs(tax_via_capital)}
+            ]
+
+    # --- Compute firm tax @ 33.34% if no provision exists ---
+    FIRM_TAX_RATE = 0.3334
+
+    for suffix in ['cy', 'py']:
+        existing_tax = _sum_list(classified.get(f'provision_tax_{suffix}', []))
+        if existing_tax > 0:
+            classified[f'firm_tax_{suffix}'] = existing_tax
+        else:
+            # Compute tax on net profit before appropriation
+            net_profit = classified.get(f'net_profit_{suffix}', 0)
+            if net_profit > 0:
+                computed_tax = round(net_profit * FIRM_TAX_RATE)
+                classified[f'firm_tax_{suffix}'] = computed_tax
+                classified[f'provision_tax_{suffix}'] = [
+                    {'name': 'Provision for Income Tax', 'amount': computed_tax}
+                ]
+
+    # --- Build appropriation for CY and PY ---
+    for suffix in ['cy', 'py']:
+        net_profit = classified.get(f'net_profit_{suffix}', 0)
+        firm_tax = classified.get(f'firm_tax_{suffix}', 0)
+        profit_after_tax = net_profit - firm_tax
+
+        ioc = classified.get(f'partner_interest_on_capital_{suffix}', 0)
+        remuneration = _sum_list(classified.get(f'partner_remuneration_{suffix}', []))
+        divisible_profit = profit_after_tax - ioc - remuneration
+
+        distribution = []
+        if partners:
+            distributed_so_far = 0
+            for idx, partner in enumerate(partners):
+                share_pct = partner.get('share', 0)
+                if idx == len(partners) - 1:
+                    # Last partner is balancing figure to absorb rounding
+                    partner_amount = divisible_profit - distributed_so_far
+                else:
+                    partner_amount = round(divisible_profit * share_pct / 100)
+                    distributed_so_far += partner_amount
+                distribution.append({
+                    'name': partner['name'],
+                    'share': share_pct,
+                    'amount': partner_amount,
+                })
+        else:
+            # No partner data provided; single entry
+            distribution.append({
+                'name': 'Partners (as per deed)',
+                'share': 100.0,
+                'amount': divisible_profit,
+            })
+
+        classified[f'appropriation_{suffix}'] = {
+            'profit_after_tax': profit_after_tax,
+            'interest_on_capital': ioc,
+            'remuneration': remuneration,
+            'divisible_profit': divisible_profit,
+            'distribution': distribution,
+        }
 
 
 def _add_to_classified(classified, category, suffix, name, amount):
