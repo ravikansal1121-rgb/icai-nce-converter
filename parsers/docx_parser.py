@@ -3,12 +3,64 @@ Parse T-format financial statements from Word (.docx) files.
 Extracts tables and falls back to paragraph text parsing.
 Returns the same structure as xlsx_parser: list of dicts.
 """
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 
 try:
     from docx import Document as DocxDocument
 except ImportError:
     DocxDocument = None
+
+
+_DOC_CONVERT_ERROR_MSG = (
+    "Old .doc format detected. Please open the file in Microsoft Word and "
+    "save as .docx (File → Save As → Word Document), then re-upload."
+)
+
+
+def _convert_doc_to_docx(filepath):
+    """
+    Convert an old-format .doc file to .docx using LibreOffice (soffice).
+    Returns (converted_path, tempdir) on success — caller must clean up tempdir.
+    Raises ValueError with a user-friendly message if soffice is unavailable
+    or conversion fails.
+    """
+    tempdir = tempfile.mkdtemp(prefix='doc_convert_')
+    try:
+        result = subprocess.run(
+            ['soffice', '--headless', '--convert-to', 'docx',
+             '--outdir', tempdir, filepath],
+            timeout=60,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+    except FileNotFoundError:
+        shutil.rmtree(tempdir, ignore_errors=True)
+        raise ValueError(_DOC_CONVERT_ERROR_MSG)
+    except (subprocess.TimeoutExpired, OSError):
+        shutil.rmtree(tempdir, ignore_errors=True)
+        raise ValueError(_DOC_CONVERT_ERROR_MSG)
+
+    if result.returncode != 0:
+        shutil.rmtree(tempdir, ignore_errors=True)
+        raise ValueError(_DOC_CONVERT_ERROR_MSG)
+
+    # Find the produced .docx file in tempdir
+    base = os.path.splitext(os.path.basename(filepath))[0]
+    expected = os.path.join(tempdir, base + '.docx')
+    if os.path.exists(expected):
+        return expected, tempdir
+
+    # Fallback: pick any .docx in the output dir
+    for name in os.listdir(tempdir):
+        if name.lower().endswith('.docx'):
+            return os.path.join(tempdir, name), tempdir
+
+    shutil.rmtree(tempdir, ignore_errors=True)
+    raise ValueError(_DOC_CONVERT_ERROR_MSG)
 
 
 def _clean_amount(val):
@@ -245,26 +297,15 @@ def _extract_entity_from_paragraphs(paragraphs):
     return 'Entity Name'
 
 
-def parse_docx(filepath):
+def _parse_docx_document(filepath):
     """
-    Parse a Word document containing T-format financial statements.
-    Returns a list of parsed data dicts (same structure as xlsx_parser).
+    Open a .docx file and extract financial data.
+    Returns a list of parsed data dicts.
     """
-    if DocxDocument is None:
+    try:
+        doc = DocxDocument(filepath)
+    except Exception:
         return []
-
-    # For .doc files, try to open as .docx
-    ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''
-    if ext == 'doc':
-        try:
-            doc = DocxDocument(filepath)
-        except Exception:
-            return []
-    else:
-        try:
-            doc = DocxDocument(filepath)
-        except Exception:
-            return []
 
     # Try to extract entity name and year from paragraphs
     entity_name = _extract_entity_from_paragraphs(doc.paragraphs)
@@ -362,3 +403,26 @@ def parse_docx(filepath):
         return [data]
 
     return []
+
+
+def parse_docx(filepath):
+    """
+    Parse a Word document containing T-format financial statements.
+    Handles both .docx (modern) and .doc (old Word binary) formats.
+    For .doc files, converts to .docx via LibreOffice (soffice) first.
+    Returns a list of parsed data dicts (same structure as xlsx_parser).
+    """
+    if DocxDocument is None:
+        return []
+
+    ext = filepath.rsplit('.', 1)[-1].lower() if '.' in filepath else ''
+
+    if ext == 'doc':
+        # Convert old .doc to .docx via LibreOffice, parse, then clean up
+        converted_path, tempdir = _convert_doc_to_docx(filepath)
+        try:
+            return _parse_docx_document(converted_path)
+        finally:
+            shutil.rmtree(tempdir, ignore_errors=True)
+
+    return _parse_docx_document(filepath)
