@@ -1,6 +1,20 @@
 """
 Parse T-format financial statements from PDF files.
-Uses pdfplumber to extract tables and text.
+
+Uses pdfplumber's word-level extraction (with x/y coordinates) to reconstruct
+two-column T-format layouts (Trading & P&L, Balance Sheet, Capital Account)
+that Tally and similar Indian accounting software produce as PDF.
+
+Strategy:
+  1. Extract all words from each page with x0/top coordinates.
+  2. Group words into rows by `top` (allowing small vertical tolerance).
+  3. For each row, split words into LEFT and RIGHT columns at the page midpoint.
+  4. Reconstruct line text per column. Track the current section (trading_pl /
+     balance_sheet / capital) by scanning rows for section header keywords.
+  5. Within each section, parse each column's lines: lines with an amount become
+     items, lines without an amount are skipped as category headers
+     ("TO PURCHASES", "FIXED ASSETS", etc.).
+
 Returns the same structure as xlsx_parser: list of dicts.
 """
 import re
@@ -9,6 +23,18 @@ try:
     import pdfplumber
 except ImportError:
     pdfplumber = None
+
+
+# ---------- Helpers ----------
+
+# Indian / Western number formats: 1,23,456.78 / 1,234.56 / 38,280 / (1,234.56)
+_AMOUNT_RE = re.compile(r'\(?-?[\d,]+(?:\.\d{1,2})?\)?')
+
+# Stricter check: must contain at least one digit and either a comma or decimal,
+# OR be a multi-digit number. Used to filter out random small numbers in names.
+_AMOUNT_RE_STRICT = re.compile(
+    r'\(?-?(?:\d{1,3}(?:,\d{2,3})+(?:\.\d{1,2})?|\d{2,}(?:\.\d{1,2})?|\d+\.\d{2})\)?'
+)
 
 
 def _clean_amount(val):
@@ -42,22 +68,32 @@ def _clean_name(val):
     return s
 
 
-def _is_skip_name(name):
-    """Check if a name should be skipped (totals, headers, etc.)."""
-    skip_patterns = [
-        r'^total', r'^grand total', r'^net profit', r'^net loss',
-        r'^gross profit', r'^gross loss', r'^balance c/d',
-        r'^balance b/d', r'^as per', r'^amount',
-        r'^particulars', r'^dr\.?$', r'^cr\.?$',
-        r'^assets?$', r'^liabilit', r'^equity',
-        r'^current assets?$', r'^non.?current', r'^fixed assets?$',
-    ]
-    lower = name.lower()
-    return any(re.match(p, lower) for p in skip_patterns)
+# Lines that are pure totals / grand totals / column headers — never items.
+_SKIP_LINE_RE = re.compile(
+    r'^(total|grand\s+total|sub\s*total|particulars|amount|dr\.?|cr\.?|'
+    r'liabilities|assets?|equity|liabilities\s+and|liability|amounts?)$',
+    re.IGNORECASE,
+)
+
+# Category-only headers (no amount on the same line) that should be skipped.
+# Items appear on subsequent lines.
+_CATEGORY_HEADER_RE = re.compile(
+    r'^(fixed\s+assets?|current\s+assets?|non.?current\s+assets?|'
+    r'investments?|loans?\s+(and|&)\s+advances?|cash\s+and\s+bank|'
+    r'other\s+current\s+assets?|other\s+non.?current\s+assets?|'
+    r'trade\s+receivables?|trade\s+payables?|sundry\s+(debtors?|creditors?)|'
+    r'capital\s+account|reserves?\s+and\s+surplus|'
+    r'secured\s+loans?|unsecured\s+loans?|borrowings?|'
+    r'long.?term\s+(borrowings?|liabilities)|'
+    r'short.?term\s+(borrowings?|liabilities|provisions?)|'
+    r'current\s+liabilities|other\s+current\s+liabilities|'
+    r'(by|to)\s+(opening|purchase|sales|direct|indirect|gross\s+profit\s*a/c|'
+    r'closing|net\s+profit\s*a/c|trading|expenses?)\s*(a/c|account)?)$',
+    re.IGNORECASE,
+)
 
 
 def _extract_year_from_text(text):
-    """Try to find a financial year pattern in text."""
     m = re.search(r'(\d{4})\s*[-–—]\s*(\d{2,4})', text)
     if m:
         y1 = m.group(1)
@@ -73,220 +109,178 @@ def _extract_year_from_text(text):
 
 
 def _detect_section(text):
-    """Detect which section a text belongs to."""
+    """Detect which section a header line belongs to."""
     t = text.lower().strip()
-    trading_kw = ['trading', 'trading account', 'trading and profit', 'trading & profit',
-                  'profit and loss', 'profit & loss', 'income and expenditure']
-    bs_kw = ['balance sheet', 'balancesheet']
-    capital_kw = ['capital account', 'capital a/c']
-
-    for kw in trading_kw:
-        if kw in t:
-            return 'trading_pl'
-    for kw in bs_kw:
-        if kw in t:
-            return 'balance_sheet'
-    for kw in capital_kw:
-        if kw in t:
-            return 'capital'
+    if not t:
+        return None
+    if 'trading' in t and ('profit' in t or 'loss' in t):
+        return 'trading_pl'
+    if 'profit and loss' in t or 'profit & loss' in t:
+        return 'trading_pl'
+    if 'income and expenditure' in t:
+        return 'trading_pl'
+    if 'trading account' in t:
+        return 'trading_pl'
+    if 'balance sheet' in t or 'balancesheet' in t:
+        return 'balance_sheet'
+    if 'capital account' in t or 'capital a/c' in t:
+        return 'capital'
     return None
 
 
 def _is_scanned_pdf(pdf):
-    """Check if a PDF appears to be scanned (no extractable text)."""
     total_chars = 0
-    pages_checked = min(len(pdf.pages), 3)
-    for i in range(pages_checked):
-        page = pdf.pages[i]
-        text = page.extract_text() or ''
+    for i in range(min(len(pdf.pages), 3)):
+        text = pdf.pages[i].extract_text() or ''
         total_chars += len(text.strip())
-    # If very little text found across pages, likely scanned
     return total_chars < 50
 
 
-def _scan_section_headers(text):
-    """
-    Scan a block of page text and return a list of (line_index, section)
-    tuples for every section header found. Lines are 0-indexed within `text`.
-    """
-    headers = []
-    if not text:
-        return headers
-    lines = text.split('\n')
-    for idx, line in enumerate(lines):
-        section = _detect_section(line)
-        if section:
-            headers.append((idx, section))
-    return headers
+# ---------- Word-coordinate based row reconstruction ----------
+
+def _group_words_into_rows(words, y_tol=3):
+    """Group words by `top` coordinate. Returns list of rows; each row is a
+    sorted-by-x list of word dicts."""
+    if not words:
+        return []
+    # Sort by top, then x0
+    sorted_words = sorted(words, key=lambda w: (w['top'], w['x0']))
+    rows = []
+    current_row = [sorted_words[0]]
+    current_top = sorted_words[0]['top']
+    for w in sorted_words[1:]:
+        if abs(w['top'] - current_top) <= y_tol:
+            current_row.append(w)
+        else:
+            rows.append(sorted(current_row, key=lambda x: x['x0']))
+            current_row = [w]
+            current_top = w['top']
+    rows.append(sorted(current_row, key=lambda x: x['x0']))
+    return rows
 
 
-def _extract_tables_best(page):
+def _find_column_split(rows, page_width):
+    """Find the x-coordinate that best splits left/right columns.
+
+    Look at the AMOUNT column for the left side — usually around x = 0.45*width.
+    Then anything beyond that until the next text run is the right column.
+    Default to page midpoint if heuristic fails.
     """
-    Try multiple table-extraction strategies and return the result with the
-    most rows. pdfplumber sometimes finds nothing with default settings but
-    succeeds with explicit vertical/horizontal strategies.
-    """
-    strategies = [
-        None,  # default settings
-        {"vertical_strategy": "lines", "horizontal_strategy": "lines"},
-        {"vertical_strategy": "text", "horizontal_strategy": "text"},
-    ]
-    best_tables = []
-    best_row_count = 0
-    for settings in strategies:
-        try:
-            if settings is None:
-                tables = page.extract_tables()
-            else:
-                tables = page.extract_tables(settings)
-        except Exception:
-            tables = []
-        if not tables:
-            continue
-        row_count = sum(len(t) for t in tables if t)
-        if row_count > best_row_count:
-            best_row_count = row_count
-            best_tables = tables
-    return best_tables
+    # Look for a header row containing two "PARTICULARS" / "AMOUNT" / etc.
+    for row in rows[:20]:
+        texts_lower = [w['text'].lower() for w in row]
+        # Find two occurrences of a header word
+        positions = []
+        for i, t in enumerate(texts_lower):
+            if t in ('particulars', 'liabilities', 'assets'):
+                positions.append(row[i]['x0'])
+        if len(positions) >= 2:
+            # The right column starts at the second occurrence
+            return positions[1] - 5
+    return page_width / 2
 
 
-# Indian-format amount: 1,23,456.78 or 12,345.00 or 1234 or (1,234.56)
-_AMOUNT_RX = re.compile(
-    r'\(?\s*(?:\d{1,3}(?:,\d{2,3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s*\)?'
-)
+def _row_text_in_column(row, x_min, x_max):
+    """Return the joined text of words in [x_min, x_max), preserving order."""
+    parts = [w['text'] for w in row if x_min <= w['x0'] < x_max]
+    return ' '.join(parts).strip()
 
 
-def _split_name_amount(line):
+def _parse_line_to_item(line):
     """
-    Given a line like "Sundry Debtors        1,23,456.78", extract
-    (name, amount) where amount is the rightmost number on the line.
-    Returns (None, 0.0) if no clear amount found.
+    Split a single column-line into (name, amount).
+    Examples:
+      'OPENING STOCK 38,280.00'   -> ('OPENING STOCK', 38280.0)
+      'TO GROSS PROFIT 7,19,541.00' -> ('GROSS PROFIT', 719541.0)
+      'CAPITAL 10,08,271.00'      -> ('CAPITAL', 1008271.0)
+      'TO OPENING STOCK'          -> ('TO OPENING STOCK', None)  # header, skip
+      '26,86,336.00'              -> (None, 2686336.0)  # standalone amount
+    Returns (name_or_None, amount_or_None).
     """
-    if not line:
-        return None, 0.0
-    matches = list(_AMOUNT_RX.finditer(line))
+    s = line.strip()
+    if not s:
+        return None, None
+
+    # Find all amount-looking tokens
+    matches = list(_AMOUNT_RE_STRICT.finditer(s))
     if not matches:
-        return None, 0.0
+        return s, None
+
+    # The LAST match is the amount; everything before it is the name
     last = matches[-1]
-    amt_str = last.group(0).strip()
-    # Must be at or near the end of the line
-    tail = line[last.end():].strip()
-    if tail and not re.match(r'^[\)\.\s]*$', tail):
-        return None, 0.0
-    name = line[:last.start()].strip()
+    amt_str = last.group(0)
+    amount = _clean_amount(amt_str)
+    if amount == 0:
+        # Probably wasn't really an amount
+        return s, None
+
+    name = s[:last.start()].strip()
     if not name:
-        return None, 0.0
-    amt = _clean_amount(amt_str)
-    if amt == 0.0:
-        return None, 0.0
-    return name, amt
+        return None, amount
+    return name, amount
 
 
-def _parse_t_format_rows(rows):
+def _filter_items(lines):
+    """Convert a list of column-lines into a list of {name, amount} items.
+
+    Skips: pure category headers (no amount), standalone totals, and column
+    header rows. A line with an amount is always treated as an item — even
+    if its name happens to match a category-header pattern (e.g. when there
+    is exactly one item under that category, like 'OTHER CURRENT ASSET 84,115').
     """
-    Parse rows from a T-format table (side-by-side Dr/Cr or Liabilities/Assets).
-    rows is a list of lists (each inner list is a row of cell values).
-    Returns (left_items, right_items).
-    """
-    if not rows or len(rows) < 2:
-        return [], []
-
-    num_cols = max(len(r) for r in rows)
-    if num_cols < 2:
-        return [], []
-
-    mid = num_cols // 2
-    left_items = []
-    right_items = []
-
-    for row in rows[1:]:  # skip header
-        # Pad row to full width
-        row = list(row) + [None] * (num_cols - len(row))
-
-        # Left side
-        left_name = ''
-        left_amt = 0.0
-        for c in range(0, mid):
-            cell_val = row[c]
-            if cell_val is None:
-                continue
-            text = str(cell_val).strip()
-            if not text:
-                continue
-            amt = _clean_amount(text)
-            if amt != 0:
-                left_amt = amt
-            else:
-                cleaned = _clean_name(text)
-                if cleaned and not left_name:
-                    left_name = cleaned
-
-        if left_name and not _is_skip_name(left_name) and left_amt != 0:
-            left_items.append({'name': left_name, 'amount': abs(left_amt)})
-
-        # Right side
-        right_name = ''
-        right_amt = 0.0
-        for c in range(mid, num_cols):
-            cell_val = row[c]
-            if cell_val is None:
-                continue
-            text = str(cell_val).strip()
-            if not text:
-                continue
-            amt = _clean_amount(text)
-            if amt != 0:
-                right_amt = amt
-            else:
-                cleaned = _clean_name(text)
-                if cleaned and not right_name:
-                    right_name = cleaned
-
-        if right_name and not _is_skip_name(right_name) and right_amt != 0:
-            right_items.append({'name': right_name, 'amount': abs(right_amt)})
-
-    return left_items, right_items
+    items = []
+    for line in lines:
+        name, amount = _parse_line_to_item(line)
+        if amount is None:
+            # Pure header line — skip
+            continue
+        if name is None:
+            # Standalone amount (sub-total). Skip.
+            continue
+        cleaned = _clean_name(name)
+        if not cleaned:
+            continue
+        if _SKIP_LINE_RE.match(cleaned):
+            continue
+        # NOTE: don't skip on _CATEGORY_HEADER_RE here — that pattern is meant
+        # for header lines without amounts, which are already filtered above.
+        items.append({'name': cleaned, 'amount': abs(amount)})
+    return items
 
 
-def _parse_capital_rows(rows):
-    """Extract capital account details from table rows."""
+def _parse_capital_from_lines(left_lines, right_lines):
+    """Capital account has Withdrawals/Closing on left and Opening/Profit/etc on right."""
     cap = {
         'opening': 0, 'capital_introduced': 0, 'net_profit': 0,
         'interest_on_capital': 0, 'drawings': 0, 'closing': 0,
     }
-    for row in rows:
-        name = ''
-        amt = 0.0
-        for cell in row:
-            if cell is None:
+    for lines in (left_lines, right_lines):
+        for line in lines:
+            name, amt = _parse_line_to_item(line)
+            if amt is None or name is None:
                 continue
-            text = str(cell).strip()
-            if not text:
-                continue
-            a = _clean_amount(text)
-            if a != 0:
-                amt = a
-            elif text:
-                name = text.lower()
-
-        if not name:
-            continue
-        if 'opening' in name or 'balance b/d' in name:
-            cap['opening'] = abs(amt)
-        elif 'capital introduced' in name or 'additional capital' in name:
-            cap['capital_introduced'] = abs(amt)
-        elif 'net profit' in name or 'profit for' in name:
-            cap['net_profit'] = abs(amt)
-        elif 'interest on capital' in name:
-            cap['interest_on_capital'] = abs(amt)
-        elif 'drawing' in name or 'withdrawal' in name:
-            cap['drawings'] = abs(amt)
-        elif 'closing' in name or 'balance c/d' in name:
-            cap['closing'] = abs(amt)
+            n = _clean_name(name).lower()
+            if 'opening' in n or 'balance b/d' in n:
+                cap['opening'] = abs(amt)
+            elif 'capital introduced' in n or 'additional capital' in n or 'add capital' in n:
+                cap['capital_introduced'] = abs(amt)
+            elif 'net profit' in n or 'profit for' in n or 'share of profit' in n:
+                cap['net_profit'] = abs(amt)
+            elif 'interest on capital' in n:
+                cap['interest_on_capital'] = abs(amt)
+            elif 'drawing' in n or 'withdrawal' in n:
+                cap['drawings'] = abs(amt)
+            elif 'closing' in n or 'balance c/d' in n:
+                cap['closing'] = abs(amt)
+            elif 'bank interest' in n or 'interest received' in n:
+                # Bank interest credited to capital — track as extra
+                cap.setdefault('bank_interest', 0)
+                cap['bank_interest'] = abs(amt)
 
     if cap['closing'] == 0 and cap['opening'] > 0:
         cap['closing'] = (cap['opening'] + cap['capital_introduced'] +
-                          cap['net_profit'] + cap['interest_on_capital'] - cap['drawings'])
+                          cap['net_profit'] + cap['interest_on_capital']
+                          + cap.get('bank_interest', 0) - cap['drawings'])
     return cap
 
 
@@ -313,7 +307,7 @@ def _extract_entity_from_text(text):
     lines = text.split('\n')
     skip = ['trading', 'profit', 'balance', 'capital', 'for the',
             'as at', 'year ended', 'dr', 'cr', 'particulars', 'amount', 'page']
-    for line in lines[:10]:
+    for line in lines[:6]:
         line = line.strip()
         if not line or len(line) < 4:
             continue
@@ -326,55 +320,7 @@ def _extract_entity_from_text(text):
     return 'Entity Name'
 
 
-def _assign_table_section(table, page_text, page_headers, used_sections):
-    """
-    Decide which section (trading_pl / balance_sheet / capital / None)
-    a given table belongs to. First checks the table's own header row,
-    then falls back to the nearest preceding section header in the page
-    text. Returns the detected section string or None.
-    """
-    # 1. Check the table's own header row
-    if table:
-        header_text = ' '.join(str(cell or '') for cell in table[0])
-        section = _detect_section(header_text)
-        if section:
-            return section
-
-    # 2. Locate this table's first non-empty cell text in the page text,
-    #    then pick the most recent header above it. If we can't find the
-    #    table text, just use the LAST header on the page that hasn't been
-    #    used yet (typical T-format pages have one header per table).
-    if not page_headers:
-        return None
-
-    if table and len(table) >= 2:
-        # Try to find any cell value of the first data row in the page text
-        probe_row = table[1] if len(table) > 1 else table[0]
-        probe_texts = [str(c).strip() for c in (probe_row or []) if c and str(c).strip()]
-        for probe in probe_texts:
-            # Trim long probes to avoid false negatives
-            snippet = probe[:30]
-            idx = page_text.find(snippet)
-            if idx >= 0:
-                # Convert char offset to line index
-                line_idx = page_text[:idx].count('\n')
-                # Pick the most recent header at or above this line
-                candidate = None
-                for h_line, h_sec in page_headers:
-                    if h_line <= line_idx:
-                        candidate = h_sec
-                if candidate:
-                    return candidate
-                break
-
-    # Fallback: first unused header on this page
-    for _, h_sec in page_headers:
-        if h_sec not in used_sections:
-            return h_sec
-
-    # Final fallback: first header on the page
-    return page_headers[0][1]
-
+# ---------- Main parser ----------
 
 def parse_pdf(filepath):
     """
@@ -390,7 +336,6 @@ def parse_pdf(filepath):
         return []
 
     try:
-        # Check for scanned PDF
         if _is_scanned_pdf(pdf):
             pdf.close()
             raise ValueError(
@@ -398,13 +343,13 @@ def parse_pdf(filepath):
                 'or convert to Excel/Word format.'
             )
 
-        # Extract full text from first page for entity name and year
-        first_page_text = pdf.pages[0].extract_text() or '' if pdf.pages else ''
-        entity_name = _extract_entity_from_text(first_page_text)
+        # Header / entity / year metadata
+        first_text = pdf.pages[0].extract_text() or '' if pdf.pages else ''
+        entity_name = _extract_entity_from_text(first_text)
         year = ''
         for page in pdf.pages[:3]:
-            page_text = page.extract_text() or ''
-            y = _extract_year_from_text(page_text)
+            t = page.extract_text() or ''
+            y = _extract_year_from_text(t)
             if y:
                 year = y
                 break
@@ -415,111 +360,82 @@ def parse_pdf(filepath):
             'source_sheet': 'pdf',
         }
 
-        # Walk pages: detect section headers from text first, then associate
-        # tables (extracted with the best of several strategies) to them.
-        used_sections = set()
+        # Accumulators — multiple sections of same kind from different pages get merged
+        trading_left_lines = []
+        trading_right_lines = []
+        bs_left_lines = []
+        bs_right_lines = []
+        capital_left_lines = []
+        capital_right_lines = []
+
         for page in pdf.pages:
-            page_text = page.extract_text() or ''
-            page_headers = _scan_section_headers(page_text)
+            words = page.extract_words()
+            if not words:
+                continue
+            rows = _group_words_into_rows(words)
+            split_x = _find_column_split(rows, page.width)
 
-            tables = _extract_tables_best(page)
-            valid_tables = [t for t in tables if t and len(t) >= 2]
-
-            for table in valid_tables:
-                section = _assign_table_section(
-                    table, page_text, page_headers, used_sections
-                )
-
-                if section == 'trading_pl' and 'trading_pl' not in data:
-                    debit, credit = _parse_t_format_rows(table)
-                    if debit or credit:
-                        data['trading_pl'] = {'debit': debit, 'credit': credit}
-                        used_sections.add('trading_pl')
-                        continue
-
-                if section == 'balance_sheet' and 'balance_sheet' not in data:
-                    liab, assets = _parse_t_format_rows(table)
-                    if liab or assets:
-                        data['balance_sheet'] = {'liabilities': liab, 'assets': assets}
-                        used_sections.add('balance_sheet')
-                        continue
-
-                if section == 'capital' and 'capital_account' not in data:
-                    data['capital_account'] = _parse_capital_rows(table)
-                    used_sections.add('capital')
-                    continue
-
-                # No clear section — guess from content keywords
-                left, right = _parse_t_format_rows(table)
-                if not (left or right):
-                    continue
-                all_names = [i['name'].lower() for i in left + right]
-                joined = ' '.join(all_names)
-                if 'trading_pl' not in data and any(
-                    kw in joined for kw in
-                    ['sales', 'purchase', 'salary', 'rent', 'stock', 'depreciation']
-                ):
-                    data['trading_pl'] = {'debit': left, 'credit': right}
-                    used_sections.add('trading_pl')
-                    continue
-                if 'balance_sheet' not in data and any(
-                    kw in joined for kw in
-                    ['capital', 'bank', 'cash', 'debtor', 'creditor', 'loan', 'sundry']
-                ):
-                    data['balance_sheet'] = {'liabilities': left, 'assets': right}
-                    used_sections.add('balance_sheet')
-
-        # If no tables found, try improved text-line extraction
-        if not any(k in data for k in ['trading_pl', 'balance_sheet', 'capital_account']):
             current_section = None
-            trading_left, trading_right = [], []
-            bs_left, bs_right = [], []
-            raw_items = []
+            for row in rows:
+                row_text = ' '.join(w['text'] for w in row).strip()
+                # Section header detection — full row text
+                sec = _detect_section(row_text)
+                if sec:
+                    current_section = sec
+                    continue
+                if not current_section:
+                    continue
 
-            for page in pdf.pages:
-                text = page.extract_text() or ''
-                for line in text.split('\n'):
-                    line = line.rstrip()
-                    if not line.strip():
-                        continue
+                # Skip the column-header row ("PARTICULARS AMOUNT PARTICULARS AMOUNT")
+                if re.fullmatch(r'(particulars|liabilities|assets|amount|\s)+',
+                                row_text, re.IGNORECASE):
+                    continue
 
-                    detected = _detect_section(line)
-                    if detected:
-                        current_section = detected
-                        continue
+                # Get left & right column text
+                left_text = _row_text_in_column(row, 0, split_x)
+                right_text = _row_text_in_column(row, split_x, page.width + 1)
 
-                    name, amt = _split_name_amount(line)
-                    if not name:
-                        # Fallback to the older split approach
-                        parts = re.split(r'\s{2,}|\t+', line.strip())
-                        if len(parts) >= 2:
-                            name = _clean_name(parts[0])
-                            amt = _clean_amount(parts[-1])
-                    else:
-                        name = _clean_name(name)
+                # Skip TOTAL lines (e.g. "TOTAL 7,19,541.00 TOTAL 7,19,541.00")
+                if re.match(r'^(total|grand\s+total)\b', left_text, re.IGNORECASE):
+                    continue
 
-                    if not name or amt == 0 or _is_skip_name(name):
-                        continue
+                if current_section == 'trading_pl':
+                    if left_text:
+                        trading_left_lines.append(left_text)
+                    if right_text:
+                        trading_right_lines.append(right_text)
+                elif current_section == 'balance_sheet':
+                    if left_text:
+                        bs_left_lines.append(left_text)
+                    if right_text:
+                        bs_right_lines.append(right_text)
+                elif current_section == 'capital':
+                    if left_text:
+                        capital_left_lines.append(left_text)
+                    if right_text:
+                        capital_right_lines.append(right_text)
 
-                    entry = {'name': name, 'amount': abs(amt)}
-                    if current_section == 'trading_pl':
-                        trading_left.append(entry)
-                    elif current_section == 'balance_sheet':
-                        bs_left.append(entry)
-                    else:
-                        raw_items.append(entry)
+        # Build sections
+        if trading_left_lines or trading_right_lines:
+            debit = _filter_items(trading_left_lines)
+            credit = _filter_items(trading_right_lines)
+            if debit or credit:
+                data['trading_pl'] = {'debit': debit, 'credit': credit}
 
-            if trading_left or trading_right:
-                data['trading_pl'] = {'debit': trading_left, 'credit': trading_right}
-            if bs_left or bs_right:
-                data['balance_sheet'] = {'liabilities': bs_left, 'assets': bs_right}
-            if not any(k in data for k in ['trading_pl', 'balance_sheet']) and raw_items:
-                data['raw_items'] = raw_items
+        if bs_left_lines or bs_right_lines:
+            liab = _filter_items(bs_left_lines)
+            assets = _filter_items(bs_right_lines)
+            if liab or assets:
+                data['balance_sheet'] = {'liabilities': liab, 'assets': assets}
+
+        if capital_left_lines or capital_right_lines:
+            cap = _parse_capital_from_lines(capital_left_lines, capital_right_lines)
+            if any(v for v in cap.values()):
+                data['capital_account'] = cap
 
         pdf.close()
 
-        # Only return if we found financial data
-        if any(k in data for k in ['trading_pl', 'balance_sheet', 'capital_account', 'raw_items']):
+        if any(k in data for k in ['trading_pl', 'balance_sheet', 'capital_account']):
             data['constitution'] = _infer_constitution(data)
             data['proprietor_name'] = entity_name if data['constitution'] == 'proprietorship' else ''
             return [data]
@@ -527,9 +443,14 @@ def parse_pdf(filepath):
         return []
 
     except ValueError:
-        # Re-raise ValueError (scanned PDF message) to caller
-        pdf.close()
+        try:
+            pdf.close()
+        except Exception:
+            pass
         raise
     except Exception:
-        pdf.close()
+        try:
+            pdf.close()
+        except Exception:
+            pass
         return []
